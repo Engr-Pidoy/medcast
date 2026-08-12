@@ -26,3 +26,7 @@ services:
         value: database
       - key: QUEUE_CONNECTION
         value: database
+      - key: APP_URL
+        value: https://medcast.onrender.com
+      - key: SESSION_SECURE_COOKIE
+        value: "true"
