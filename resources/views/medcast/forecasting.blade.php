@@ -78,6 +78,43 @@
         </div>
     </section>
 
+    @if (!empty($monthlyOutlook))
+        <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                    <h2 class="text-lg font-semibold text-slate-900">Forecast: Dami ng Pasyente sa Hospital</h2>
+                    <p class="mt-1 text-sm text-slate-500">
+                        Monthly average daily admissions · SARIMA {{ $monthlyOutlook['model_order'] ?? '' }}
+                        · actual {{ $monthlyOutlook['actual_start'] }}–{{ $monthlyOutlook['actual_end'] }},
+                        predicted {{ $monthlyOutlook['forecast_start'] }}–{{ $monthlyOutlook['forecast_end'] }}
+                    </p>
+                </div>
+                @if (!empty($resultsFigureUrl))
+                    <a href="{{ $resultsFigureUrl }}" download="sarima-12month-forecast.png"
+                       class="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                        Download PNG (Results)
+                    </a>
+                @endif
+            </div>
+            <div class="mb-3 flex flex-wrap gap-4 text-xs text-slate-500">
+                <span class="inline-flex items-center gap-1.5"><span class="h-0.5 w-5 bg-blue-600"></span> Actual Data</span>
+                <span class="inline-flex items-center gap-1.5"><span class="h-0.5 w-5 bg-red-600"></span> Predicted (Next 12 months)</span>
+            </div>
+            <div id="resultsForecastChart" class="min-h-[380px]"></div>
+        </section>
+    @elseif (!empty($resultsFigureUrl))
+        <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+                <h2 class="text-lg font-semibold text-slate-900">Forecast: Dami ng Pasyente sa Hospital</h2>
+                <a href="{{ $resultsFigureUrl }}" download="sarima-12month-forecast.png"
+                   class="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                    Download PNG (Results)
+                </a>
+            </div>
+            <img src="{{ $resultsFigureUrl }}" alt="SARIMA 12-month forecast of hospital admissions" class="w-full rounded-lg border border-slate-100 bg-white">
+        </section>
+    @endif
+
     @if (count($comparison))
         <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <h2 class="mb-1 text-lg font-semibold text-slate-900">Model Comparison · {{ $selectedHorizon }}-day horizon</h2>
@@ -180,5 +217,34 @@
         legend: { show: false },
         tooltip: { shared: true, y: { formatter: (val) => Array.isArray(val) ? val[0] + ' – ' + val[1] : val } }
     }).render();
+
+    const monthlyOutlook = @json($monthlyOutlook ?? []);
+    if (monthlyOutlook && monthlyOutlook.categories && monthlyOutlook.categories.length) {
+        new ApexCharts(document.querySelector('#resultsForecastChart'), {
+            chart: { type: 'line', height: 400, toolbar: { show: false }, fontFamily: 'inherit' },
+            series: [
+                { name: 'Actual Data', data: monthlyOutlook.actual },
+                { name: 'Predicted (Next 12 months)', data: monthlyOutlook.forecast }
+            ],
+            colors: ['#1f77b4', '#d62728'],
+            stroke: { curve: 'smooth', width: [2.5, 2.5] },
+            markers: { size: 0 },
+            dataLabels: { enabled: false },
+            xaxis: {
+                categories: monthlyOutlook.categories,
+                title: { text: 'Taon' },
+                labels: { rotate: 0, style: { colors: '#64748b' } },
+                tickAmount: 8
+            },
+            yaxis: {
+                min: 0,
+                title: { text: 'Dami ng Pasyente' },
+                labels: { style: { colors: '#64748b' } }
+            },
+            grid: { borderColor: '#c5c5c5', strokeDashArray: 0 },
+            legend: { position: 'top', horizontalAlign: 'center' },
+            tooltip: { y: { formatter: (val) => val == null ? '—' : val.toFixed(1) } }
+        }).render();
+    }
 </script>
 @endpush

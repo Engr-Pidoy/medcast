@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\DailyAdmission;
+use App\Models\ForecastRun;
 use App\Models\Hospital;
 use Carbon\Carbon;
 use Illuminate\Http\RedirectResponse;
@@ -83,6 +84,52 @@ class MedcastController extends Controller
         $order = trim((string) $order);
 
         return $order !== '' ? trim($name.' '.$order) : $name;
+    }
+
+    private function monthlyOutlook(?ForecastRun $run): array
+    {
+        $params = is_array($run?->model_params) ? $run->model_params : [];
+        $outlook = $params['monthly_outlook'] ?? null;
+
+        if (! is_array($outlook) || empty($outlook['actual'])) {
+            $fallback = public_path('figures/monthly-outlook.json');
+            if (is_file($fallback)) {
+                $decoded = json_decode((string) file_get_contents($fallback), true);
+                $outlook = is_array($decoded) ? $decoded : null;
+            }
+        }
+
+        if (! is_array($outlook) || empty($outlook['actual']) || empty($outlook['forecast'])) {
+            return [];
+        }
+
+        $actual = collect($outlook['actual']);
+        $forecast = collect($outlook['forecast']);
+        $months = $actual->pluck('month')->merge($forecast->pluck('month'))->unique()->values();
+        $actualMap = $actual->pluck('value', 'month');
+        $forecastMap = $forecast->pluck('value', 'month');
+        $lastActualMonth = $actual->last()['month'] ?? null;
+
+        return [
+            'model_order' => $outlook['model_order'] ?? ($run?->model_order),
+            'actual_start' => $outlook['actual_start'] ?? $actual->first()['month'] ?? null,
+            'actual_end' => $outlook['actual_end'] ?? $lastActualMonth,
+            'forecast_start' => $outlook['forecast_start'] ?? $forecast->first()['month'] ?? null,
+            'forecast_end' => $outlook['forecast_end'] ?? $forecast->last()['month'] ?? null,
+            'categories' => $months->all(),
+            'actual' => $months->map(fn ($m) => $actualMap[$m] ?? null)->all(),
+            'forecast' => $months->map(function ($m) use ($forecastMap, $lastActualMonth, $actualMap) {
+                if (isset($forecastMap[$m])) {
+                    return $forecastMap[$m];
+                }
+                // bridge so the red line meets the last blue point
+                if ($m === $lastActualMonth) {
+                    return $actualMap[$m] ?? null;
+                }
+
+                return null;
+            })->all(),
+        ];
     }
 
     public function dashboard(): View
@@ -567,6 +614,10 @@ class MedcastController extends Controller
             ],
             'bestModels' => $bestModels,
             'comparison' => $comparison,
+            'monthlyOutlook' => $this->monthlyOutlook($run),
+            'resultsFigureUrl' => file_exists(public_path('figures/sarima-12month-forecast.png'))
+                ? asset('figures/sarima-12month-forecast.png')
+                : null,
         ]));
     }
 

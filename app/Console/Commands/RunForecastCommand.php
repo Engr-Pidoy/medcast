@@ -188,6 +188,7 @@ class RunForecastCommand extends Command
                         'prophet_backend' => $payload['prophet_backend'] ?? null,
                         'best_model_by_horizon' => $payload['best_model_by_horizon'] ?? null,
                         'sarima_order_selection' => $modelName === 'SARIMA' ? $sarimaSelection : null,
+                        'monthly_outlook' => $modelName === 'SARIMA' ? ($payload['monthly_outlook'] ?? null) : null,
                     ],
                     'horizon_days' => 30,
                     'train_start_date' => $payload['train_start_date'] ?? null,

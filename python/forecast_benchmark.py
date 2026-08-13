@@ -246,6 +246,51 @@ def forecast_sarima(y: pd.Series, steps: int, selection: dict | None = None):
     return rows, selection
 
 
+def build_monthly_outlook(y: pd.Series, selection: dict, months: int = 12) -> dict:
+    """
+    Monthly average daily admissions: historical actuals + 12-month SARIMA forecast.
+    Used for the Results & Discussions figure (actual vs predicted).
+    """
+    monthly_actual = y.resample("MS").mean()
+    res = selection.get("fitted_result")
+    if res is None:
+        order = tuple(selection["selected"]["order"])
+        seasonal_order = tuple(selection["selected"]["seasonal_order"])
+        res = fit_sarima_model(y, order, seasonal_order)
+
+    steps = 400
+    pred = res.get_forecast(steps=steps)
+    mean = clip_nonneg(pred.predicted_mean.values)
+    start = y.index.max() + pd.Timedelta(days=1)
+    fc = pd.Series(mean, index=pd.date_range(start, periods=steps, freq="D"))
+    monthly_fc = fc.resample("MS").mean()
+    # Skip a partial first forecast month so plotted months are complete
+    if start.day != 1 and len(monthly_fc) > 1:
+        monthly_fc = monthly_fc.iloc[1:]
+    monthly_fc = monthly_fc.iloc[:months]
+
+    actual = [
+        {"month": d.strftime("%Y-%m"), "value": round(float(v), 2)}
+        for d, v in monthly_actual.items()
+        if pd.notna(v)
+    ]
+    forecast = [
+        {"month": d.strftime("%Y-%m"), "value": round(float(v), 2)}
+        for d, v in monthly_fc.items()
+        if pd.notna(v)
+    ]
+    return {
+        "unit": "average daily admissions",
+        "model_order": selection["selected"]["model_order"],
+        "actual_start": actual[0]["month"] if actual else None,
+        "actual_end": actual[-1]["month"] if actual else None,
+        "forecast_start": forecast[0]["month"] if forecast else None,
+        "forecast_end": forecast[-1]["month"] if forecast else None,
+        "actual": actual,
+        "forecast": forecast,
+    }
+
+
 def forecast_holtwinters(y: pd.Series, steps: int):
     model = ExponentialSmoothing(
         y,
@@ -481,6 +526,7 @@ def main() -> int:
 
     primary_model = best.get("7") or best.get("1") or "SARIMA"
     selected_order = sarima_selection_meta["selected"]["model_order"]
+    monthly_outlook = build_monthly_outlook(y, full_sarima_selection, months=12)
 
     payload = {
         "batch_id": uuid.uuid4().hex,
@@ -497,6 +543,7 @@ def main() -> int:
         "model_errors": model_errors,
         "sarima_order_selection": sarima_selection_meta,
         "selected_sarima_order": selected_order,
+        "monthly_outlook": monthly_outlook,
     }
 
     out = Path(args.output)
