@@ -117,15 +117,117 @@ def forecast_seasonal_naive(y: pd.Series, steps: int, m=7):
     return point, std
 
 
-def forecast_sarima(y: pd.Series, steps: int):
+# Candidate SARIMA orders for AIC/BIC selection (weekly seasonality m=7)
+SARIMA_ORDER_CANDIDATES = [
+    ((0, 1, 1), (0, 1, 1, 7)),
+    ((0, 1, 1), (1, 1, 0, 7)),
+    ((0, 1, 1), (1, 1, 1, 7)),
+    ((1, 1, 0), (0, 1, 1, 7)),
+    ((1, 1, 0), (1, 1, 0, 7)),
+    ((1, 1, 0), (1, 1, 1, 7)),
+    ((1, 1, 1), (0, 1, 1, 7)),
+    ((1, 1, 1), (1, 1, 0, 7)),
+    ((1, 1, 1), (1, 1, 1, 7)),
+    ((2, 1, 1), (1, 1, 1, 7)),
+    ((1, 1, 2), (1, 1, 1, 7)),
+]
+
+
+def fit_sarima_model(y: pd.Series, order, seasonal_order):
     model = SARIMAX(
         y,
-        order=(1, 1, 1),
-        seasonal_order=(1, 1, 1, 7),
+        order=order,
+        seasonal_order=seasonal_order,
         enforce_stationarity=False,
         enforce_invertibility=False,
     )
-    res = model.fit(disp=False)
+    return model.fit(disp=False)
+
+
+def select_sarima_order(y: pd.Series) -> dict:
+    """
+    Compare candidate SARIMA orders using AIC (primary) and BIC.
+    Returns selected order plus full comparison table for thesis Results.
+    """
+    rows = []
+    best = None
+    for order, seasonal_order in SARIMA_ORDER_CANDIDATES:
+        label = (
+            f"({order[0]},{order[1]},{order[2]})"
+            f"({seasonal_order[0]},{seasonal_order[1]},{seasonal_order[2]}){seasonal_order[3]}"
+        )
+        try:
+            res = fit_sarima_model(y, order, seasonal_order)
+            row = {
+                "model_order": label,
+                "order": list(order),
+                "seasonal_order": list(seasonal_order),
+                "aic": round(float(res.aic), 3),
+                "bic": round(float(res.bic), 3),
+                "hqic": round(float(res.hqic), 3) if res.hqic is not None else None,
+            }
+            rows.append(row)
+            if best is None or row["aic"] < best["aic"]:
+                best = {**row, "result": res}
+        except Exception as e:
+            rows.append(
+                {
+                    "model_order": label,
+                    "order": list(order),
+                    "seasonal_order": list(seasonal_order),
+                    "aic": None,
+                    "bic": None,
+                    "hqic": None,
+                    "error": str(e),
+                }
+            )
+
+    if best is None:
+        # Fallback if all candidates fail
+        order, seasonal_order = (1, 1, 1), (1, 1, 1, 7)
+        res = fit_sarima_model(y, order, seasonal_order)
+        label = "(1,1,1)(1,1,1)7"
+        best = {
+            "model_order": label,
+            "order": list(order),
+            "seasonal_order": list(seasonal_order),
+            "aic": round(float(res.aic), 3),
+            "bic": round(float(res.bic), 3),
+            "hqic": round(float(res.hqic), 3) if res.hqic is not None else None,
+            "result": res,
+        }
+
+    rows_sorted = sorted(
+        [r for r in rows if r.get("aic") is not None],
+        key=lambda r: r["aic"],
+    )
+    return {
+        "selection_criterion": "AIC (primary), BIC reported for comparison",
+        "selected": {
+            "model_order": best["model_order"],
+            "order": best["order"],
+            "seasonal_order": best["seasonal_order"],
+            "aic": best["aic"],
+            "bic": best["bic"],
+            "hqic": best.get("hqic"),
+        },
+        "candidates": rows_sorted,
+        "fitted_result": best["result"],
+    }
+
+
+def forecast_sarima(y: pd.Series, steps: int, selection: dict | None = None):
+    if selection is None:
+        selection = select_sarima_order(y)
+        res = selection["fitted_result"]
+    else:
+        # Reuse fitted result when available; otherwise refit selected order
+        res = selection.get("fitted_result")
+        if res is None:
+            order = tuple(selection["selected"]["order"])
+            seasonal_order = tuple(selection["selected"]["seasonal_order"])
+            res = fit_sarima_model(y, order, seasonal_order)
+
     pred = res.get_forecast(steps=steps)
     mean = clip_nonneg(pred.predicted_mean.values)
     ci80 = pred.conf_int(alpha=0.20)
@@ -141,7 +243,7 @@ def forecast_sarima(y: pd.Series, steps: int):
                 "pi95_high": round(float(max(0, ci95.iloc[i, 1])), 2),
             }
         )
-    return rows
+    return rows, selection
 
 
 def forecast_holtwinters(y: pd.Series, steps: int):
@@ -217,19 +319,26 @@ def forecast_prophet(y: pd.Series, steps: int):
     return rows
 
 
-def forecast_model(name: str, y: pd.Series, steps: int):
+def forecast_model(name: str, y: pd.Series, steps: int, sarima_selection: dict | None = None):
     if name == "Naive":
         point, std = forecast_naive(y, steps)
-        return residual_intervals(point, std, steps)
+        return residual_intervals(point, std, steps), None
     if name == "SeasonalNaive":
         point, std = forecast_seasonal_naive(y, steps)
-        return residual_intervals(point, std, steps)
+        return residual_intervals(point, std, steps), None
     if name == "SARIMA":
-        return forecast_sarima(y, steps)
+        rows, selection = forecast_sarima(y, steps, selection=sarima_selection)
+        # Drop non-serializable fitted result before returning metadata
+        meta = {
+            "selection_criterion": selection["selection_criterion"],
+            "selected": selection["selected"],
+            "candidates": selection["candidates"],
+        }
+        return rows, meta
     if name == "HoltWinters":
-        return forecast_holtwinters(y, steps)
+        return forecast_holtwinters(y, steps), None
     if name == "Prophet":
-        return forecast_prophet(y, steps)
+        return forecast_prophet(y, steps), None
     raise ValueError(name)
 
 
@@ -305,11 +414,22 @@ def main() -> int:
     benchmarks = []
     forecasts = {}
     model_errors = {}
+    sarima_selection_meta = None
+
+    # Select SARIMA order once on full series using AIC/BIC (for reporting + live forecast)
+    full_sarima_selection = select_sarima_order(y)
+    sarima_selection_meta = {
+        "selection_criterion": full_sarima_selection["selection_criterion"],
+        "selected": full_sarima_selection["selected"],
+        "candidates": full_sarima_selection["candidates"],
+    }
 
     for model_name in MODELS:
         try:
             # evaluation on holdout using train-only fit
-            ev_rows = forecast_model(model_name, train, steps)
+            # For SARIMA evaluation, re-select on train only (honest holdout)
+            train_sel = select_sarima_order(train) if model_name == "SARIMA" else None
+            ev_rows, _meta = forecast_model(model_name, train, steps, sarima_selection=train_sel)
             pred = np.array([r["point_forecast"] for r in ev_rows], dtype=float)
             actual = test.values.astype(float)
             # align lengths
@@ -331,7 +451,12 @@ def main() -> int:
                 )
 
             # live forecast on full history (30 days)
-            live_rows = forecast_model(model_name, y, 30)
+            live_rows, _meta = forecast_model(
+                model_name,
+                y,
+                30,
+                sarima_selection=full_sarima_selection if model_name == "SARIMA" else None,
+            )
             start = y.index.max() + pd.Timedelta(days=1)
             points = []
             for i, row in enumerate(live_rows):
@@ -355,6 +480,7 @@ def main() -> int:
                 b["is_best_for_horizon"] = b["model_name"] == best[str(h)]
 
     primary_model = best.get("7") or best.get("1") or "SARIMA"
+    selected_order = sarima_selection_meta["selected"]["model_order"]
 
     payload = {
         "batch_id": uuid.uuid4().hex,
@@ -369,12 +495,26 @@ def main() -> int:
         "primary_model": primary_model,
         "forecasts": forecasts,
         "model_errors": model_errors,
+        "sarima_order_selection": sarima_selection_meta,
+        "selected_sarima_order": selected_order,
     }
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(json.dumps({"ok": True, "output": str(out), "primary_model": primary_model, "best": best}))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "output": str(out),
+                "primary_model": primary_model,
+                "best": best,
+                "selected_sarima_order": selected_order,
+                "selected_aic": sarima_selection_meta["selected"]["aic"],
+                "selected_bic": sarima_selection_meta["selected"]["bic"],
+            }
+        )
+    )
     return 0
 
 

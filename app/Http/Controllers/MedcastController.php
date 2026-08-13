@@ -679,6 +679,15 @@ class MedcastController extends Controller
         $primary = $hospital->activeForecastRun();
         $primaryMetrics = $benchmarks->first(fn ($b) => $b->model_name === ($primary?->model_name ?? 'SARIMA') && (int) $b->horizon_days === 7);
 
+        $sarimaRun = $batchId
+            ? $hospital->forecastRuns()->where('batch_id', $batchId)->where('model_name', 'SARIMA')->latest('id')->first()
+            : $hospital->forecastRuns()->where('model_name', 'SARIMA')->latest('id')->first();
+        $sarimaSelection = is_array($sarimaRun?->model_params)
+            ? ($sarimaRun->model_params['sarima_order_selection'] ?? null)
+            : null;
+        $sarimaSelected = is_array($sarimaSelection) ? ($sarimaSelection['selected'] ?? null) : null;
+        $sarimaCandidates = is_array($sarimaSelection) ? ($sarimaSelection['candidates'] ?? []) : [];
+
         return view('medcast.performance', array_merge($this->hospitalContext($hospital), [
             'metrics' => [
                 'mae' => $primaryMetrics ? round((float) $primaryMetrics->mae, 2) : ($latest ? (float) $latest->mae : 0),
@@ -693,6 +702,9 @@ class MedcastController extends Controller
             'matrix' => $matrix,
             'bestByHorizon' => $bestByHorizon,
             'hasBenchmarks' => $benchmarks->isNotEmpty(),
+            'sarimaSelected' => $sarimaSelected,
+            'sarimaCandidates' => $sarimaCandidates,
+            'sarimaCriterion' => is_array($sarimaSelection) ? ($sarimaSelection['selection_criterion'] ?? null) : null,
             'residualChart' => [
                 'categories' => $residualLabels,
                 'residuals' => $residuals,

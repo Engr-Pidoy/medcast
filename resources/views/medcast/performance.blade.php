@@ -55,6 +55,53 @@
             @endforeach
         </section>
 
+        @if (!empty($sarimaCandidates))
+            <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h2 class="mb-1 text-lg font-semibold text-slate-900">SARIMA Order Selection (AIC / BIC)</h2>
+                <p class="mb-2 text-sm text-slate-500">
+                    {{ $sarimaCriterion ?? 'Candidate SARIMA orders compared using AIC (primary) and BIC.' }}
+                </p>
+                @if (!empty($sarimaSelected))
+                    <p class="mb-4 text-sm text-slate-700">
+                        Selected order:
+                        <span class="font-semibold text-emerald-700">{{ $sarimaSelected['model_order'] ?? '—' }}</span>
+                        · AIC {{ $sarimaSelected['aic'] ?? '—' }}
+                        · BIC {{ $sarimaSelected['bic'] ?? '—' }}
+                    </p>
+                @endif
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-slate-200 text-sm">
+                        <thead>
+                            <tr class="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                <th class="px-4 py-3">Order</th>
+                                <th class="px-4 py-3 text-right">AIC</th>
+                                <th class="px-4 py-3 text-right">BIC</th>
+                                <th class="px-4 py-3 text-right">HQIC</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                            @foreach ($sarimaCandidates as $cand)
+                                @php
+                                    $isSelected = ($sarimaSelected['model_order'] ?? null) === ($cand['model_order'] ?? null);
+                                @endphp
+                                <tr class="{{ $isSelected ? 'bg-emerald-50' : 'hover:bg-slate-50/80' }}">
+                                    <td class="whitespace-nowrap px-4 py-3 font-medium {{ $isSelected ? 'text-emerald-800' : 'text-slate-800' }}">
+                                        {{ $cand['model_order'] ?? '—' }}
+                                        @if ($isSelected)
+                                            <span class="ml-2 text-xs font-semibold uppercase text-emerald-600">selected</span>
+                                        @endif
+                                    </td>
+                                    <td class="px-4 py-3 text-right {{ $isSelected ? 'font-semibold text-emerald-800' : 'text-slate-600' }}">{{ $cand['aic'] ?? '—' }}</td>
+                                    <td class="px-4 py-3 text-right {{ $isSelected ? 'font-semibold text-emerald-800' : 'text-slate-600' }}">{{ $cand['bic'] ?? '—' }}</td>
+                                    <td class="px-4 py-3 text-right {{ $isSelected ? 'font-semibold text-emerald-800' : 'text-slate-600' }}">{{ $cand['hqic'] ?? '—' }}</td>
+                                </tr>
+                            @endforeach
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        @endif
+
         <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <h2 class="mb-1 text-lg font-semibold text-slate-900">Benchmark Matrix</h2>
             <p class="mb-4 text-sm text-slate-500">MAE / RMSE / MASE for Naive, SeasonalNaive, SARIMA, Prophet, and HoltWinters. Best model per horizon highlighted.</p>

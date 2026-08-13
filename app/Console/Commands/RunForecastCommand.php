@@ -173,17 +173,21 @@ class RunForecastCommand extends Command
 
             $primary = $payload['primary_model'] ?? 'SARIMA';
 
+            $sarimaSelection = $payload['sarima_order_selection'] ?? null;
+            $selectedSarimaOrder = $payload['selected_sarima_order'] ?? '(1,1,1)(1,1,1)7';
+
             foreach ($payload['forecasts'] ?? [] as $modelName => $points) {
                 $isPrimary = $modelName === $primary;
                 $run = ForecastRun::query()->create([
                     'hospital_id' => $hospital->id,
                     'batch_id' => $batchId,
                     'model_name' => $modelName,
-                    'model_order' => $modelName === 'SARIMA' ? '(1,1,1)(1,1,1)7' : null,
+                    'model_order' => $modelName === 'SARIMA' ? $selectedSarimaOrder : null,
                     'model_params' => [
                         'batch_id' => $batchId,
                         'prophet_backend' => $payload['prophet_backend'] ?? null,
                         'best_model_by_horizon' => $payload['best_model_by_horizon'] ?? null,
+                        'sarima_order_selection' => $modelName === 'SARIMA' ? $sarimaSelection : null,
                     ],
                     'horizon_days' => 30,
                     'train_start_date' => $payload['train_start_date'] ?? null,
