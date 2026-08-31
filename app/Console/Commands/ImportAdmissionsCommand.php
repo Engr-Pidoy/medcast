@@ -227,7 +227,7 @@ class ImportAdmissionsCommand extends Command
             ->get();
 
         $mean = round((float) $recent->avg('total_admissions'), 2);
-        $asOf = $latest->admission_date->copy();
+        $asOf = Carbon::parse((string) $latest->admission_date);
 
         ForecastRun::query()
             ->where('hospital_id', $hospital->id)

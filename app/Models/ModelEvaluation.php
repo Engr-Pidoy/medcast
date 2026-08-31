@@ -5,7 +5,20 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 
+/**
+ * @property string|null $period_label
+ * @property Carbon $period_start
+ * @property Carbon $period_end
+ * @property numeric-string $mae
+ * @property numeric-string $rmse
+ * @property numeric-string $mape
+ * @property numeric-string $r_squared
+ * @property numeric-string|null $coverage_80
+ * @property numeric-string|null $coverage_95
+ * @property string|null $status
+ */
 #[Fillable([
     'hospital_id',
     'forecast_run_id',
@@ -38,11 +51,13 @@ class ModelEvaluation extends Model
         ];
     }
 
+    /** @return BelongsTo<Hospital, $this> */
     public function hospital(): BelongsTo
     {
         return $this->belongsTo(Hospital::class);
     }
 
+    /** @return BelongsTo<ForecastRun, $this> */
     public function forecastRun(): BelongsTo
     {
         return $this->belongsTo(ForecastRun::class);

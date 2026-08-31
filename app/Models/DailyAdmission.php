@@ -5,7 +5,20 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 
+/**
+ * @property int $hospital_id
+ * @property Carbon $admission_date
+ * @property int $regular_admissions
+ * @property int $emergency_admissions
+ * @property int $other_admissions
+ * @property int $total_admissions
+ * @property int $discharges
+ * @property int|null $occupied_beds
+ * @property numeric-string|float|null $occupancy_rate
+ * @property Hospital|null $hospital
+ */
 #[Fillable([
     'hospital_id',
     'admission_date',
@@ -34,6 +47,7 @@ class DailyAdmission extends Model
         ];
     }
 
+    /** @return BelongsTo<Hospital, $this> */
     public function hospital(): BelongsTo
     {
         return $this->belongsTo(Hospital::class);

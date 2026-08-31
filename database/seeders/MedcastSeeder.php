@@ -14,11 +14,11 @@ class MedcastSeeder extends Seeder
         ]);
 
         if ($exit !== 0) {
-            $this->command?->error(Artisan::output());
+            $this->command->error(Artisan::output());
 
             return;
         }
 
-        $this->command?->info(Artisan::output());
+        $this->command->info(Artisan::output());
     }
 }

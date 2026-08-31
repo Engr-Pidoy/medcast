@@ -5,7 +5,16 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 
+/**
+ * @property Carbon $forecast_date
+ * @property numeric-string $point_forecast
+ * @property numeric-string|null $pi80_low
+ * @property numeric-string|null $pi80_high
+ * @property numeric-string|null $pi95_low
+ * @property numeric-string|null $pi95_high
+ */
 #[Fillable([
     'forecast_run_id',
     'forecast_date',
@@ -29,6 +38,7 @@ class ForecastPoint extends Model
         ];
     }
 
+    /** @return BelongsTo<ForecastRun, $this> */
     public function forecastRun(): BelongsTo
     {
         return $this->belongsTo(ForecastRun::class);

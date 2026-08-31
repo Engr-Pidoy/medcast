@@ -100,7 +100,7 @@ class RunForecastCommand extends Command
 
         fputcsv($fh, ['date', 'admissions']);
         foreach ($rows as $row) {
-            fputcsv($fh, [$row->admission_date->toDateString(), $row->total_admissions]);
+            fputcsv($fh, [Carbon::parse((string) $row->admission_date)->toDateString(), $row->total_admissions]);
         }
         fclose($fh);
     }
@@ -254,9 +254,12 @@ class RunForecastCommand extends Command
                 if ($isPrimary) {
                     ModelEvaluation::query()->where('hospital_id', $hospital->id)->delete();
                     $end = $payload['train_end_date'] ?? now()->toDateString();
+                    $rawBenchmarks = $payload['benchmarks'] ?? [];
+                    /** @var array<int, array<string, mixed>> $benchmarkRows */
+                    $benchmarkRows = is_array($rawBenchmarks) ? $rawBenchmarks : [];
                     foreach ([1, 7, 30] as $h) {
-                        $b = collect($payload['benchmarks'] ?? [])->first(
-                            fn ($x) => $x['model_name'] === $modelName && (int) $x['horizon_days'] === $h
+                        $b = collect($benchmarkRows)->first(
+                            fn (array $x) => $x['model_name'] === $modelName && (int) $x['horizon_days'] === $h
                         );
                         if (! $b) {
                             continue;

@@ -6,6 +6,13 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+/**
+ * @property string $name
+ * @property string $code
+ * @property int $total_beds
+ * @property string $timezone
+ * @property bool $is_active
+ */
 #[Fillable([
     'name',
     'code',
@@ -27,31 +34,37 @@ class Hospital extends Model
         ];
     }
 
+    /** @return HasMany<DailyAdmission, $this> */
     public function dailyAdmissions(): HasMany
     {
         return $this->hasMany(DailyAdmission::class);
     }
 
+    /** @return HasMany<ForecastRun, $this> */
     public function forecastRuns(): HasMany
     {
         return $this->hasMany(ForecastRun::class);
     }
 
+    /** @return HasMany<ModelEvaluation, $this> */
     public function modelEvaluations(): HasMany
     {
         return $this->hasMany(ModelEvaluation::class);
     }
 
+    /** @return HasMany<ModelBenchmark, $this> */
     public function modelBenchmarks(): HasMany
     {
         return $this->hasMany(ModelBenchmark::class);
     }
 
+    /** @return HasMany<DemandThreshold, $this> */
     public function demandThresholds(): HasMany
     {
         return $this->hasMany(DemandThreshold::class);
     }
 
+    /** @return HasMany<AdmissionTrendStat, $this> */
     public function trendStats(): HasMany
     {
         return $this->hasMany(AdmissionTrendStat::class);

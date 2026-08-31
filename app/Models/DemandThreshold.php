@@ -28,6 +28,7 @@ class DemandThreshold extends Model
         ];
     }
 
+    /** @return BelongsTo<Hospital, $this> */
     public function hospital(): BelongsTo
     {
         return $this->belongsTo(Hospital::class);

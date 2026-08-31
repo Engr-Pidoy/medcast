@@ -6,7 +6,21 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
 
+/**
+ * @property string|null $batch_id
+ * @property string $model_name
+ * @property string|null $model_order
+ * @property array<string, mixed>|null $model_params
+ * @property int $horizon_days
+ * @property Carbon|null $train_start_date
+ * @property Carbon|null $train_end_date
+ * @property Carbon|null $run_at
+ * @property string $status
+ * @property bool $is_active
+ * @property bool $is_primary
+ */
 #[Fillable([
     'hospital_id',
     'batch_id',
@@ -37,16 +51,19 @@ class ForecastRun extends Model
         ];
     }
 
+    /** @return BelongsTo<Hospital, $this> */
     public function hospital(): BelongsTo
     {
         return $this->belongsTo(Hospital::class);
     }
 
+    /** @return HasMany<ForecastPoint, $this> */
     public function points(): HasMany
     {
         return $this->hasMany(ForecastPoint::class)->orderBy('forecast_date');
     }
 
+    /** @return HasMany<ModelEvaluation, $this> */
     public function evaluations(): HasMany
     {
         return $this->hasMany(ModelEvaluation::class);

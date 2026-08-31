@@ -5,7 +5,21 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 
+/**
+ * @property string $batch_id
+ * @property string $model_name
+ * @property int $horizon_days
+ * @property numeric-string $mae
+ * @property numeric-string $rmse
+ * @property numeric-string|null $mase
+ * @property numeric-string|null $coverage_80
+ * @property numeric-string|null $coverage_95
+ * @property array<string, mixed>|null $diagnostics
+ * @property bool $is_best_for_horizon
+ * @property Carbon|null $evaluated_at
+ */
 #[Fillable([
     'hospital_id',
     'batch_id',
@@ -67,6 +81,7 @@ class ModelBenchmark extends Model
         ];
     }
 
+    /** @return BelongsTo<Hospital, $this> */
     public function hospital(): BelongsTo
     {
         return $this->belongsTo(Hospital::class);

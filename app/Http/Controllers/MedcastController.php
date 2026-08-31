@@ -27,6 +27,9 @@ class MedcastController extends Controller
             ->firstOrFail();
     }
 
+    /**
+     * @return array{hospitalName: string, currentDateTime: string}
+     */
     private function hospitalContext(Hospital $hospital): array
     {
         return [
@@ -122,6 +125,9 @@ class MedcastController extends Controller
         return 0.5 * (1 + $sign * $erf);
     }
 
+    /**
+     * @return array{level: string, class: string, preparedness: string}
+     */
     private function capacityRiskLevel(float $score): array
     {
         return match (true) {
@@ -132,9 +138,12 @@ class MedcastController extends Controller
         };
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     private function monthlyOutlook(?ForecastRun $run): array
     {
-        $params = is_array($run?->model_params) ? $run->model_params : [];
+        $params = $run ? ($run->model_params ?? []) : [];
         $outlook = $params['monthly_outlook'] ?? null;
 
         if (! is_array($outlook) || empty($outlook['actual'])) {
@@ -145,23 +154,26 @@ class MedcastController extends Controller
             }
         }
 
-        if (! is_array($outlook) || empty($outlook['actual']) || empty($outlook['forecast'])) {
+        if (! is_array($outlook)) {
             return [];
         }
 
-        $actual = collect($outlook['actual']);
-        $forecast = collect($outlook['forecast']);
+        $actual = collect($this->normalizeMonthlySeries($outlook['actual'] ?? null));
+        $forecast = collect($this->normalizeMonthlySeries($outlook['forecast'] ?? null));
+        if ($actual->isEmpty() || $forecast->isEmpty()) {
+            return [];
+        }
         $months = $actual->pluck('month')->merge($forecast->pluck('month'))->unique()->values();
         $actualMap = $actual->pluck('value', 'month');
         $forecastMap = $forecast->pluck('value', 'month');
-        $lastActualMonth = $actual->last()['month'] ?? null;
+        $lastActualMonth = $actual->last()['month'];
 
         return [
             'model_order' => $outlook['model_order'] ?? ($run?->model_order),
-            'actual_start' => $outlook['actual_start'] ?? $actual->first()['month'] ?? null,
+            'actual_start' => $outlook['actual_start'] ?? $actual->first()['month'],
             'actual_end' => $outlook['actual_end'] ?? $lastActualMonth,
-            'forecast_start' => $outlook['forecast_start'] ?? $forecast->first()['month'] ?? null,
-            'forecast_end' => $outlook['forecast_end'] ?? $forecast->last()['month'] ?? null,
+            'forecast_start' => $outlook['forecast_start'] ?? $forecast->first()['month'],
+            'forecast_end' => $outlook['forecast_end'] ?? $forecast->last()['month'],
             'categories' => $months->all(),
             'actual' => $months->map(fn ($m) => $actualMap[$m] ?? null)->all(),
             'forecast' => $months->map(function ($m) use ($forecastMap, $lastActualMonth, $actualMap) {
@@ -176,6 +188,30 @@ class MedcastController extends Controller
                 return null;
             })->all(),
         ];
+    }
+
+    /**
+     * @return list<array{month: string, value: float}>
+     */
+    private function normalizeMonthlySeries(mixed $series): array
+    {
+        if (! is_array($series)) {
+            return [];
+        }
+
+        $normalized = [];
+        foreach ($series as $item) {
+            if (! is_array($item) || ! is_string($item['month'] ?? null) || ! is_numeric($item['value'] ?? null)) {
+                continue;
+            }
+
+            $normalized[] = [
+                'month' => $item['month'],
+                'value' => (float) $item['value'],
+            ];
+        }
+
+        return $normalized;
     }
 
     public function dashboard(): View
@@ -493,18 +529,26 @@ class MedcastController extends Controller
     {
         $hospital = $this->hospital();
         $latest = $hospital->dailyAdmissions()->orderByDesc('admission_date')->first();
+        $defaults = $latest ? [
+            'regular_admissions' => $latest->regular_admissions,
+            'emergency_admissions' => $latest->emergency_admissions,
+            'other_admissions' => $latest->other_admissions,
+            'discharges' => $latest->discharges,
+            'occupied_beds' => $latest->occupied_beds ?? 0,
+        ] : [
+            'regular_admissions' => 0,
+            'emergency_admissions' => 0,
+            'other_admissions' => 0,
+            'discharges' => 0,
+            'occupied_beds' => 0,
+        ];
 
         return view('medcast.encode', array_merge($this->hospitalContext($hospital), [
             'hospital' => $hospital,
             'latest' => $latest,
-            'defaults' => [
+            'defaults' => array_merge([
                 'admission_date' => now()->timezone($hospital->timezone)->toDateString(),
-                'regular_admissions' => $latest?->regular_admissions ?? 0,
-                'emergency_admissions' => $latest?->emergency_admissions ?? 0,
-                'other_admissions' => $latest?->other_admissions ?? 0,
-                'discharges' => $latest?->discharges ?? 0,
-                'occupied_beds' => $latest?->occupied_beds ?? 0,
-            ],
+            ], $defaults),
         ]));
     }
 
@@ -797,7 +841,8 @@ class MedcastController extends Controller
         }
 
         $primary = $hospital->activeForecastRun();
-        $primaryMetrics = $benchmarks->first(fn ($b) => $b->model_name === ($primary?->model_name ?? 'SARIMA') && (int) $b->horizon_days === 7);
+        $primaryModelName = $primary ? $primary->model_name : 'SARIMA';
+        $primaryMetrics = $benchmarks->first(fn ($b) => $b->model_name === $primaryModelName && (int) $b->horizon_days === 7);
         $params = is_array($primary?->model_params) ? $primary->model_params : [];
         $datasetStart = $params['dataset_coverage_start'] ?? $primary?->train_start_date?->toDateString();
         $datasetEnd = $params['dataset_coverage_end'] ?? $primary?->train_end_date?->toDateString();
@@ -823,7 +868,7 @@ class MedcastController extends Controller
                 'primary_model' => $this->formatModelLabel($primary?->model_name, $primary?->model_order),
             ],
             'datasetInfo' => [
-                'version' => $params['dataset_version'] ?? ($primary?->batch_id ? 'MEDCAST-'.substr($primary->batch_id, 0, 12) : 'Legacy dataset'),
+                'version' => $params['dataset_version'] ?? ($primary && $primary->batch_id ? 'MEDCAST-'.substr($primary->batch_id, 0, 12) : 'Legacy dataset'),
                 'coverage' => $datasetStart && $datasetEnd
                     ? Carbon::parse($datasetStart)->format('M j, Y').' – '.Carbon::parse($datasetEnd)->format('M j, Y')
                     : 'Not available',
@@ -834,7 +879,7 @@ class MedcastController extends Controller
                 'training_percent' => (float) ($params['training_percent'] ?? 80),
                 'testing_percent' => (float) ($params['testing_percent'] ?? 20),
                 'generated_at' => $primary?->run_at?->timezone($hospital->timezone)->format('M j, Y · g:i A') ?? '—',
-                'batch_id' => $primary?->batch_id ?? '—',
+                'batch_id' => $primary ? $primary->batch_id : '—',
             ],
             'matrix' => $matrix,
             'bestByHorizon' => $bestByHorizon,
@@ -1017,8 +1062,8 @@ class MedcastController extends Controller
         $points = $allPoints->take(7)->values();
         $threshold = $hospital->activeDemandThreshold();
 
-        $occupied = (int) ($latest?->occupied_beds ?? 0);
-        $occupancy = (float) ($latest?->occupancy_rate ?? 0);
+        $occupied = (int) ($latest ? ($latest->occupied_beds ?? 0) : 0);
+        $occupancy = (float) ($latest ? ($latest->occupancy_rate ?? 0) : 0);
         $available = max(0, $hospital->total_beds - $occupied);
 
         $classifiedDays = $points->map(function ($p) use ($threshold) {
@@ -1176,7 +1221,7 @@ class MedcastController extends Controller
                 'full_name' => 'Patient Admission Forecasting and Decision-Support System',
                 'hospital' => $hospital->name,
                 'version' => '1.2.0',
-                'model' => $this->formatModelLabel($run?->model_name ?? 'SARIMA', $run?->model_order),
+                'model' => $this->formatModelLabel($run ? $run->model_name : 'SARIMA', $run?->model_order),
                 'models' => 'Naive, SeasonalNaive, SARIMA, Prophet, HoltWinters',
                 'horizons' => '1-day, 7-day, and 30-day',
                 'capacity' => Hospital::MEAN_OPERATIONAL_BEDS.' mean operational beds ('.Hospital::BASE_BEDS.' base beds plus overflow capacity)',
