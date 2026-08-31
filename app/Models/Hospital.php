@@ -15,6 +15,10 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 ])]
 class Hospital extends Model
 {
+    public const BASE_BEDS = 100;
+
+    public const MEAN_OPERATIONAL_BEDS = 120;
+
     protected function casts(): array
     {
         return [

@@ -35,7 +35,7 @@ class ImportAdmissionsCommand extends Command
             ['code' => 'NDH'],
             [
                 'name' => 'Norala District Hospital',
-                'total_beds' => 100,
+                'total_beds' => Hospital::MEAN_OPERATIONAL_BEDS,
                 'timezone' => 'Asia/Manila',
                 'is_active' => true,
             ]
@@ -87,6 +87,7 @@ class ImportAdmissionsCommand extends Command
 
                 if (blank($dateRaw) || blank($admissionsRaw)) {
                     $skipped++;
+
                     continue;
                 }
 
@@ -94,6 +95,7 @@ class ImportAdmissionsCommand extends Command
                     $date = Carbon::parse($dateRaw)->toDateString();
                 } catch (\Throwable) {
                     $skipped++;
+
                     continue;
                 }
 
@@ -102,33 +104,36 @@ class ImportAdmissionsCommand extends Command
                 $occupied = $columns['occupied'] !== null && ($row[$columns['occupied']] ?? '') !== ''
                     ? (int) $row[$columns['occupied']]
                     : null;
-                $capacity = $columns['capacity'] !== null && ($row[$columns['capacity']] ?? '') !== ''
-                    ? (int) $row[$columns['capacity']]
-                    : $hospital->total_beds;
-                $occupancy = $columns['occupancy'] !== null && ($row[$columns['occupancy']] ?? '') !== ''
-                    ? round((float) $row[$columns['occupancy']], 2)
-                    : ($occupied !== null && $capacity > 0 ? round(($occupied / $capacity) * 100, 2) : null);
+                $operationalCapacity = max(1, (int) $hospital->total_beds);
+                $occupancy = $occupied !== null
+                    ? round(($occupied / $operationalCapacity) * 100, 2)
+                    : null;
 
-                if ($capacity > 0) {
-                    $hospital->total_beds = $capacity;
-                }
+                $values = [
+                    'regular_admissions' => $admissions,
+                    'emergency_admissions' => 0,
+                    'other_admissions' => 0,
+                    'total_admissions' => $admissions,
+                    'discharges' => $discharges,
+                    'occupied_beds' => $occupied,
+                    'occupancy_rate' => $occupancy,
+                    'notes' => 'Imported from hospital CSV (total admissions; occupancy normalized to the 120-bed mean operational capacity)',
+                ];
 
-                DailyAdmission::query()->updateOrCreate(
-                    [
+                $existing = DailyAdmission::query()
+                    ->where('hospital_id', $hospital->id)
+                    ->whereDate('admission_date', $date)
+                    ->first();
+
+                if ($existing) {
+                    $existing->update($values);
+                } else {
+                    DailyAdmission::query()->create([
                         'hospital_id' => $hospital->id,
                         'admission_date' => $date,
-                    ],
-                    [
-                        'regular_admissions' => $admissions,
-                        'emergency_admissions' => 0,
-                        'other_admissions' => 0,
-                        'total_admissions' => $admissions,
-                        'discharges' => $discharges,
-                        'occupied_beds' => $occupied,
-                        'occupancy_rate' => $occupancy,
-                        'notes' => 'Imported from hospital CSV (total admissions; no type split)',
-                    ]
-                );
+                        ...$values,
+                    ]);
+                }
 
                 $imported++;
                 $bar->advance();
@@ -153,7 +158,7 @@ class ImportAdmissionsCommand extends Command
         $min = DailyAdmission::query()->where('hospital_id', $hospital->id)->min('admission_date');
         $max = DailyAdmission::query()->where('hospital_id', $hospital->id)->max('admission_date');
         $this->line("Date range: {$min} → {$max}");
-        $this->line('Beds capacity set to: '.$hospital->fresh()->total_beds);
+        $this->line('Mean operational bed capacity set to: '.$hospital->fresh()->total_beds);
 
         return self::SUCCESS;
     }

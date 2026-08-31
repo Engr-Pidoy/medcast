@@ -37,6 +37,10 @@
                     <p class="mt-1 font-semibold text-slate-900">{{ $system['horizons'] }}</p>
                 </div>
                 <div class="rounded-lg bg-slate-50 p-4">
+                    <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Capacity Assumption</p>
+                    <p class="mt-1 font-semibold text-slate-900">{{ $system['capacity'] }}</p>
+                </div>
+                <div class="rounded-lg bg-slate-50 p-4">
                     <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Version</p>
                     <p class="mt-1 font-semibold text-slate-900">{{ $system['version'] }}</p>
                 </div>
@@ -54,7 +58,7 @@
                     <li>Login as hospital staff/admin</li>
                     <li>Encode daily totals or upload CSV/Excel</li>
                     <li>Run multi-model forecast (button or 6:00 AM schedule)</li>
-                    <li>Review Trends, Forecasting, Performance, and Decision Support</li>
+                    <li>Review Trends, Forecasting, stronger Performance diagnostics, Capacity Risk, and Decision Support</li>
                 </ol>
             </div>
             <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">

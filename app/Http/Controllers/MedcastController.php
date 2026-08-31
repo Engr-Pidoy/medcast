@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\DailyAdmission;
 use App\Models\ForecastRun;
 use App\Models\Hospital;
+use App\Services\ForecastUpdater;
 use Carbon\Carbon;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -84,6 +85,51 @@ class MedcastController extends Controller
         $order = trim((string) $order);
 
         return $order !== '' ? trim($name.' '.$order) : $name;
+    }
+
+    /**
+     * @param  array<int, float|int|string>  $values
+     */
+    private function percentile(array $values, float $percentile): float
+    {
+        $values = array_values(array_map('floatval', $values));
+        sort($values, SORT_NUMERIC);
+
+        if ($values === []) {
+            return 0.0;
+        }
+
+        $index = ($percentile / 100) * (count($values) - 1);
+        $lower = (int) floor($index);
+        $upper = (int) ceil($index);
+
+        if ($lower === $upper) {
+            return $values[$lower];
+        }
+
+        $weight = $index - $lower;
+
+        return $values[$lower] * (1 - $weight) + $values[$upper] * $weight;
+    }
+
+    private function normalCdf(float $value): float
+    {
+        $sign = $value < 0 ? -1 : 1;
+        $x = abs($value) / sqrt(2);
+        $t = 1 / (1 + 0.3275911 * $x);
+        $erf = 1 - (((((1.061405429 * $t - 1.453152027) * $t) + 1.421413741) * $t - 0.284496736) * $t + 0.254829592) * $t * exp(-$x * $x);
+
+        return 0.5 * (1 + $sign * $erf);
+    }
+
+    private function capacityRiskLevel(float $score): array
+    {
+        return match (true) {
+            $score >= 75 => ['level' => 'Critical', 'class' => 'bg-rose-100 text-rose-800', 'preparedness' => 'Emergency surge activation'],
+            $score >= 50 => ['level' => 'High', 'class' => 'bg-orange-100 text-orange-800', 'preparedness' => 'Enhanced staffing and overflow readiness'],
+            $score >= 25 => ['level' => 'Moderate', 'class' => 'bg-amber-100 text-amber-800', 'preparedness' => 'Standby resources and daily monitoring'],
+            default => ['level' => 'Low', 'class' => 'bg-emerald-100 text-emerald-800', 'preparedness' => 'Routine preparedness'],
+        };
     }
 
     private function monthlyOutlook(?ForecastRun $run): array
@@ -374,9 +420,11 @@ class MedcastController extends Controller
         ]));
     }
 
-    public function uploadAdmissions(Request $request): RedirectResponse
+    public function uploadAdmissions(Request $request, ForecastUpdater $forecastUpdater): RedirectResponse
     {
         set_time_limit(300);
+
+        $hospital = $this->hospital();
 
         $request->validate([
             'admissions_file' => ['required', 'file', 'max:10240', 'extensions:csv,txt,xlsx'],
@@ -411,7 +459,6 @@ class MedcastController extends Controller
 
             $importExit = Artisan::call('medcast:import-admissions', [
                 '--path' => $csvPath,
-                '--fresh' => true,
                 '--skip-forecast' => true,
             ]);
 
@@ -421,18 +468,18 @@ class MedcastController extends Controller
                     ->with('error', 'Import failed. '.trim(Artisan::output()));
             }
 
-            $forecastExit = Artisan::call('medcast:run-forecast');
+            $forecastExit = $forecastUpdater->run();
             if ($forecastExit !== 0) {
                 return redirect()
                     ->route('historical')
-                    ->with('error', 'Data imported, but SARIMA forecast failed. '.trim(Artisan::output()));
+                    ->with('error', 'Data was saved, but the forecast refresh failed. '.$forecastUpdater->output());
             }
 
-            $count = DailyAdmission::query()->count();
+            $count = $hospital->dailyAdmissions()->count();
 
             return redirect()
                 ->route('forecasting')
-                ->with('success', "Uploaded and imported {$count} days. SARIMA forecast updated automatically.");
+                ->with('success', "Upload saved. The dataset now contains {$count} days; matching dates were updated, new dates were added, and all forecasts were refreshed.");
         } catch (\Throwable $e) {
             report($e);
 
@@ -461,7 +508,7 @@ class MedcastController extends Controller
         ]));
     }
 
-    public function storeAdmission(Request $request): RedirectResponse
+    public function storeAdmission(Request $request, ForecastUpdater $forecastUpdater): RedirectResponse
     {
         set_time_limit(300);
 
@@ -475,7 +522,6 @@ class MedcastController extends Controller
             'discharges' => ['required', 'integer', 'min:0'],
             'occupied_beds' => ['required', 'integer', 'min:0'],
             'notes' => ['nullable', 'string', 'max:1000'],
-            'run_forecast' => ['nullable', 'boolean'],
         ]);
 
         $occupied = (int) $data['occupied_beds'];
@@ -483,39 +529,40 @@ class MedcastController extends Controller
             ? round(($occupied / $hospital->total_beds) * 100, 2)
             : null;
 
-        DailyAdmission::query()->updateOrCreate(
-            [
-                'hospital_id' => $hospital->id,
+        $values = [
+            'regular_admissions' => $data['regular_admissions'],
+            'emergency_admissions' => $data['emergency_admissions'],
+            'other_admissions' => $data['other_admissions'],
+            'total_admissions' => $data['regular_admissions'] + $data['emergency_admissions'] + $data['other_admissions'],
+            'discharges' => $data['discharges'],
+            'occupied_beds' => $occupied,
+            'occupancy_rate' => $occupancy,
+            'notes' => $data['notes'] ?? 'Encoded via MEDCAST daily form',
+        ];
+
+        $existing = $hospital->dailyAdmissions()
+            ->whereDate('admission_date', $data['admission_date'])
+            ->first();
+
+        if ($existing) {
+            $existing->update($values);
+        } else {
+            $hospital->dailyAdmissions()->create([
                 'admission_date' => $data['admission_date'],
-            ],
-            [
-                'regular_admissions' => $data['regular_admissions'],
-                'emergency_admissions' => $data['emergency_admissions'],
-                'other_admissions' => $data['other_admissions'],
-                'total_admissions' => $data['regular_admissions'] + $data['emergency_admissions'] + $data['other_admissions'],
-                'discharges' => $data['discharges'],
-                'occupied_beds' => $occupied,
-                'occupancy_rate' => $occupancy,
-                'notes' => $data['notes'] ?? 'Encoded via MEDCAST daily form',
-            ]
-        );
+                ...$values,
+            ]);
+        }
 
-        if ($request->boolean('run_forecast')) {
-            $exit = Artisan::call('medcast:run-forecast');
-            if ($exit !== 0) {
-                return redirect()
-                    ->route('encode')
-                    ->with('error', 'Record saved, but forecast failed. '.trim(Artisan::output()));
-            }
-
+        $exit = $forecastUpdater->run();
+        if ($exit !== 0) {
             return redirect()
-                ->route('forecasting')
-                ->with('success', 'Daily record saved and SARIMA forecast updated.');
+                ->route('encode')
+                ->with('error', 'Daily record was saved, but the forecast refresh failed. '.$forecastUpdater->output());
         }
 
         return redirect()
-            ->route('encode')
-            ->with('success', 'Daily admission record saved for '.$data['admission_date'].'.');
+            ->route('forecasting')
+            ->with('success', 'Daily record saved and all forecasts were updated automatically.');
     }
 
     public function forecasting(Request $request): View
@@ -677,6 +724,10 @@ class MedcastController extends Controller
                     'mae' => round((float) $row->mae, 2),
                     'rmse' => round((float) $row->rmse, 2),
                     'mase' => round((float) $row->mase, 3),
+                    'coverage80' => $row->coverage_80 !== null ? round((float) $row->coverage_80, 1) : null,
+                    'coverage95' => $row->coverage_95 !== null ? round((float) $row->coverage_95, 1) : null,
+                    'f1' => $row->f1_score !== null ? round((float) $row->f1_score, 1) : null,
+                    'robustness' => $row->robustness_score !== null ? round((float) $row->robustness_score, 1) : null,
                     'is_best' => (bool) $row->is_best_for_horizon,
                 ] : null;
             }
@@ -694,6 +745,24 @@ class MedcastController extends Controller
                 'mae' => round((float) $best->mae, 2),
                 'rmse' => round((float) $best->rmse, 2),
                 'mase' => round((float) $best->mase, 3),
+                'coverage80' => $best->coverage_80 !== null ? round((float) $best->coverage_80, 1) : null,
+                'coverage95' => $best->coverage_95 !== null ? round((float) $best->coverage_95, 1) : null,
+                'width80' => $best->avg_width_80 !== null ? round((float) $best->avg_width_80, 2) : null,
+                'width95' => $best->avg_width_95 !== null ? round((float) $best->avg_width_95, 2) : null,
+                'relativeWidth80' => $best->relative_width_80 !== null ? round((float) $best->relative_width_80, 1) : null,
+                'relativeWidth95' => $best->relative_width_95 !== null ? round((float) $best->relative_width_95, 1) : null,
+                'highDemandMae' => $best->high_demand_mae !== null ? round((float) $best->high_demand_mae, 2) : null,
+                'highDemandDays' => (int) $best->high_demand_days,
+                'sensitivity' => $best->sensitivity !== null ? round((float) $best->sensitivity, 1) : null,
+                'specificity' => $best->specificity !== null ? round((float) $best->specificity, 1) : null,
+                'precision' => $best->precision !== null ? round((float) $best->precision, 1) : null,
+                'f1' => $best->f1_score !== null ? round((float) $best->f1_score, 1) : null,
+                'falseAlertRate' => $best->false_alert_rate !== null ? round((float) $best->false_alert_rate, 1) : null,
+                'missedEventRate' => $best->missed_event_rate !== null ? round((float) $best->missed_event_rate, 1) : null,
+                'rollingMaeMean' => $best->rolling_mae_mean !== null ? round((float) $best->rolling_mae_mean, 2) : null,
+                'rollingMaeStd' => $best->rolling_mae_std !== null ? round((float) $best->rolling_mae_std, 2) : null,
+                'robustness' => $best->robustness_score !== null ? round((float) $best->robustness_score, 1) : null,
+                'diagnostics' => is_array($best->diagnostics) ? $best->diagnostics : [],
             ] : null;
         }
 
@@ -729,6 +798,9 @@ class MedcastController extends Controller
 
         $primary = $hospital->activeForecastRun();
         $primaryMetrics = $benchmarks->first(fn ($b) => $b->model_name === ($primary?->model_name ?? 'SARIMA') && (int) $b->horizon_days === 7);
+        $params = is_array($primary?->model_params) ? $primary->model_params : [];
+        $datasetStart = $params['dataset_coverage_start'] ?? $primary?->train_start_date?->toDateString();
+        $datasetEnd = $params['dataset_coverage_end'] ?? $primary?->train_end_date?->toDateString();
 
         $sarimaRun = $batchId
             ? $hospital->forecastRuns()->where('batch_id', $batchId)->where('model_name', 'SARIMA')->latest('id')->first()
@@ -746,12 +818,27 @@ class MedcastController extends Controller
                 'mase' => $primaryMetrics ? round((float) $primaryMetrics->mase, 3) : null,
                 'mape' => $latest ? (float) $latest->mape : null,
                 'r2' => $latest ? (float) $latest->r_squared : null,
-                'coverage80' => $latest ? (float) $latest->coverage_80 : null,
-                'coverage95' => $latest ? (float) $latest->coverage_95 : null,
+                'coverage80' => $primaryMetrics?->coverage_80 !== null ? round((float) $primaryMetrics->coverage_80, 1) : ($latest ? (float) $latest->coverage_80 : null),
+                'coverage95' => $primaryMetrics?->coverage_95 !== null ? round((float) $primaryMetrics->coverage_95, 1) : ($latest ? (float) $latest->coverage_95 : null),
                 'primary_model' => $this->formatModelLabel($primary?->model_name, $primary?->model_order),
+            ],
+            'datasetInfo' => [
+                'version' => $params['dataset_version'] ?? ($primary?->batch_id ? 'MEDCAST-'.substr($primary->batch_id, 0, 12) : 'Legacy dataset'),
+                'coverage' => $datasetStart && $datasetEnd
+                    ? Carbon::parse($datasetStart)->format('M j, Y').' – '.Carbon::parse($datasetEnd)->format('M j, Y')
+                    : 'Not available',
+                'records' => (int) ($params['dataset_records'] ?? $hospital->dailyAdmissions()->count()),
+                'holdout_days' => (int) ($params['holdout_days'] ?? 30),
+                'training_records' => (int) ($params['training_records'] ?? 0),
+                'testing_records' => (int) ($params['testing_records'] ?? ($params['holdout_days'] ?? 30)),
+                'training_percent' => (float) ($params['training_percent'] ?? 80),
+                'testing_percent' => (float) ($params['testing_percent'] ?? 20),
+                'generated_at' => $primary?->run_at?->timezone($hospital->timezone)->format('M j, Y · g:i A') ?? '—',
+                'batch_id' => $primary?->batch_id ?? '—',
             ],
             'matrix' => $matrix,
             'bestByHorizon' => $bestByHorizon,
+            'sensitivityAnalysis' => $bestByHorizon[7]['diagnostics']['sensitivity_analysis'] ?? [],
             'hasBenchmarks' => $benchmarks->isNotEmpty(),
             'sarimaSelected' => $sarimaSelected,
             'sarimaCandidates' => $sarimaCandidates,
@@ -768,6 +855,156 @@ class MedcastController extends Controller
                 'mape' => (float) $e->mape,
                 'status' => $e->status ?? 'Fair',
             ])->all(),
+        ]));
+    }
+
+    public function capacityRisk(Request $request): View
+    {
+        $hospital = $this->hospital();
+        $horizon = (int) $request->query('horizon', 7);
+        if (! in_array($horizon, [1, 7, 30], true)) {
+            $horizon = 7;
+        }
+
+        $capacityMode = strtolower((string) $request->query('capacity_mode', 'moderate'));
+        if (! in_array($capacityMode, ['constrained', 'moderate', 'expanded', 'custom'], true)) {
+            $capacityMode = 'moderate';
+        }
+
+        $penaltyMode = strtolower((string) $request->query('penalty', 'balanced'));
+        $penalties = [
+            'balanced' => [
+                'label' => 'Balanced',
+                'multiplier' => 1.0,
+                'description' => 'Equal emphasis on overload prevention and resource use.',
+            ],
+            'overload-sensitive' => [
+                'label' => 'Overload-sensitive',
+                'multiplier' => 1.15,
+                'description' => 'Escalates earlier when missed overload could be costly.',
+            ],
+            'resource-conservative' => [
+                'label' => 'Resource-conservative',
+                'multiplier' => 0.85,
+                'description' => 'Requires stronger evidence before committing extra capacity.',
+            ],
+        ];
+        if (! isset($penalties[$penaltyMode])) {
+            $penaltyMode = 'balanced';
+        }
+
+        $history = $hospital->dailyAdmissions()
+            ->orderBy('admission_date')
+            ->pluck('total_admissions')
+            ->all();
+        abort_if($history === [], 404, 'No admission history is available for capacity scenarios.');
+
+        $capacityPresets = [
+            'constrained' => max(1, (int) round($this->percentile($history, 50))),
+            'moderate' => max(1, (int) round($this->percentile($history, 66))),
+            'expanded' => max(1, (int) round($this->percentile($history, 90))),
+        ];
+        $customCapacity = max(1, min(9999, (int) $request->query('custom_capacity', $capacityPresets['moderate'])));
+        $scenarioCapacity = $capacityMode === 'custom'
+            ? $customCapacity
+            : $capacityPresets[$capacityMode];
+
+        $batchId = $this->latestBenchmarkBatchId($hospital);
+        $bestBenchmark = $batchId
+            ? $hospital->modelBenchmarks()
+                ->where('batch_id', $batchId)
+                ->where('horizon_days', $horizon)
+                ->where('is_best_for_horizon', true)
+                ->first()
+            : null;
+
+        $run = null;
+        if ($bestBenchmark) {
+            $run = $hospital->forecastRuns()
+                ->where('batch_id', $batchId)
+                ->where('model_name', $bestBenchmark->model_name)
+                ->where('status', 'completed')
+                ->latest('run_at')
+                ->first();
+        }
+        $run ??= $hospital->activeForecastRun();
+        abort_if(! $run, 404, 'No completed forecast is available for capacity scenarios.');
+
+        $points = $run->points()->orderBy('forecast_date')->limit($horizon)->get();
+        abort_if($points->isEmpty(), 404, 'The selected forecast has no forecast points.');
+
+        $daily = $points->map(function ($point) use ($scenarioCapacity, $penalties, $penaltyMode) {
+            $forecast = (float) $point->point_forecast;
+            $low80 = (float) ($point->pi80_low ?? $forecast);
+            $high80 = (float) ($point->pi80_high ?? $forecast);
+            $sigma = max(0.0, ($high80 - $low80) / (2 * 1.2816));
+            $probability = $sigma > 0.0001
+                ? 1 - $this->normalCdf(($scenarioCapacity - $forecast) / $sigma)
+                : ($forecast > $scenarioCapacity ? 1.0 : 0.0);
+            $probability = max(0.0, min(1.0, $probability));
+            $pressure = $forecast / max(1, $scenarioCapacity);
+            $baseScore = ($probability * 65) + (min(1.5, $pressure) / 1.5 * 35);
+            $riskScore = min(100, $baseScore * $penalties[$penaltyMode]['multiplier']);
+            $risk = $this->capacityRiskLevel($riskScore);
+
+            return [
+                'date' => $point->forecast_date->format('D, M j'),
+                'category' => $point->forecast_date->format('M j'),
+                'forecast' => round($forecast, 1),
+                'interval' => round($low80, 1).' – '.round($high80, 1),
+                'pressure' => round($pressure, 2),
+                'overload' => round(max(0, $forecast - $scenarioCapacity), 1),
+                'probability' => round($probability * 100, 1),
+                'risk' => $risk['level'],
+                'risk_class' => $risk['class'],
+            ];
+        })->values();
+
+        $averageForecast = (float) $daily->avg('forecast');
+        $pressureRatio = $averageForecast / max(1, $scenarioCapacity);
+        $probabilityAny = 1 - $daily->reduce(
+            fn (float $carry, array $day) => $carry * (1 - ($day['probability'] / 100)),
+            1.0
+        );
+        $baseRiskScore = ($probabilityAny * 65) + (min(1.5, $pressureRatio) / 1.5 * 35);
+        $riskScore = min(100, $baseRiskScore * $penalties[$penaltyMode]['multiplier']);
+        $risk = $this->capacityRiskLevel($riskScore);
+        $params = is_array($run->model_params) ? $run->model_params : [];
+
+        return view('medcast.capacity-risk', array_merge($this->hospitalContext($hospital), [
+            'controls' => [
+                'horizon' => $horizon,
+                'capacity_mode' => $capacityMode,
+                'custom_capacity' => $customCapacity,
+                'penalty' => $penaltyMode,
+            ],
+            'capacityPresets' => $capacityPresets,
+            'penalties' => $penalties,
+            'scenario' => [
+                'model' => $this->formatModelLabel($run->model_name, $run->model_order),
+                'forecasted_admissions' => round($averageForecast, 1),
+                'capacity' => $scenarioCapacity,
+                'pressure_ratio' => round($pressureRatio, 2),
+                'expected_overload' => round((float) $daily->sum('overload'), 1),
+                'probability' => round($probabilityAny * 100, 1),
+                'risk_score' => round($riskScore, 1),
+                'risk_level' => $risk['level'],
+                'risk_class' => $risk['class'],
+                'preparedness' => $risk['preparedness'],
+                'penalty_description' => $penalties[$penaltyMode]['description'],
+            ],
+            'dailyScenarios' => $daily->all(),
+            'chartData' => [
+                'categories' => $daily->pluck('category')->all(),
+                'forecast' => $daily->pluck('forecast')->all(),
+                'capacity' => array_fill(0, $daily->count(), $scenarioCapacity),
+                'probability' => $daily->pluck('probability')->all(),
+            ],
+            'datasetInfo' => [
+                'version' => $params['dataset_version'] ?? ($run->batch_id ? 'MEDCAST-'.substr($run->batch_id, 0, 12) : 'Legacy dataset'),
+                'coverage' => ($params['dataset_coverage_start'] ?? $run->train_start_date?->toDateString())
+                    .' – '.($params['dataset_coverage_end'] ?? $run->train_end_date?->toDateString()),
+            ],
         ]));
     }
 
@@ -938,11 +1175,12 @@ class MedcastController extends Controller
                 'name' => 'MEDCAST',
                 'full_name' => 'Patient Admission Forecasting and Decision-Support System',
                 'hospital' => $hospital->name,
-                'version' => '1.1.0',
+                'version' => '1.2.0',
                 'model' => $this->formatModelLabel($run?->model_name ?? 'SARIMA', $run?->model_order),
                 'models' => 'Naive, SeasonalNaive, SARIMA, Prophet, HoltWinters',
                 'horizons' => '1-day, 7-day, and 30-day',
-                'purpose' => 'Help hospital administrators anticipate daily patient admissions, compare forecasting models across short and medium horizons, plan staffing and bed capacity, and support operational decisions with probabilistic forecasts and demand-level alerts.',
+                'capacity' => Hospital::MEAN_OPERATIONAL_BEDS.' mean operational beds ('.Hospital::BASE_BEDS.' base beds plus overflow capacity)',
+                'purpose' => 'Help hospital administrators anticipate daily patient admissions, compare forecasting models with interval and high-demand diagnostics, test capacity-risk scenarios, and support operational decisions with probabilistic forecasts and demand-level alerts.',
             ],
         ]));
     }

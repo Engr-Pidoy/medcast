@@ -38,6 +38,27 @@
         </div>
     </section>
 
+    <section class="rounded-xl border border-blue-200 bg-blue-50/60 p-5 shadow-sm">
+        <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+                <p class="text-xs font-semibold uppercase tracking-wide text-blue-700">Evaluation transparency</p>
+                <h2 class="mt-1 text-lg font-bold text-slate-900">{{ $datasetInfo['version'] }}</h2>
+                <p class="mt-1 text-sm text-slate-600">Coverage: {{ $datasetInfo['coverage'] }} · {{ number_format($datasetInfo['records']) }} daily observations</p>
+                <p class="mt-1 text-sm font-medium text-blue-800">Chronological split: {{ $datasetInfo['training_percent'] }}% training ({{ number_format($datasetInfo['training_records']) }}) / {{ $datasetInfo['testing_percent'] }}% testing ({{ number_format($datasetInfo['testing_records']) }})</p>
+            </div>
+            <dl class="grid grid-cols-2 gap-x-8 gap-y-2 text-sm lg:text-right">
+                <div>
+                    <dt class="text-xs uppercase tracking-wide text-slate-400">Holdout</dt>
+                    <dd class="mt-1 font-semibold text-slate-700">{{ $datasetInfo['holdout_days'] }} days (20%)</dd>
+                </div>
+                <div>
+                    <dt class="text-xs uppercase tracking-wide text-slate-400">Evaluated</dt>
+                    <dd class="mt-1 font-semibold text-slate-700">{{ $datasetInfo['generated_at'] }}</dd>
+                </div>
+            </dl>
+        </div>
+    </section>
+
     @if ($hasBenchmarks)
         <section class="grid grid-cols-1 gap-4 md:grid-cols-3">
             @foreach ([1 => '1-day', 7 => '7-day', 30 => '30-day'] as $h => $label)
@@ -144,6 +165,121 @@
                 </table>
             </div>
         </section>
+
+        <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 class="text-lg font-semibold text-slate-900">Prediction-Interval Quality by Horizon</h2>
+            <p class="mt-1 text-sm text-slate-500">Coverage shows how often actual admissions fell inside the interval. Relative width is normalized against mean actual demand; robustness measures rolling error stability within the holdout without model refitting.</p>
+            <div class="mt-4 overflow-x-auto">
+                <table class="min-w-full divide-y divide-slate-200 text-sm">
+                    <thead>
+                        <tr class="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            <th class="px-4 py-3">Horizon / best model</th>
+                            <th class="px-4 py-3 text-right">80% coverage</th>
+                            <th class="px-4 py-3 text-right">95% coverage</th>
+                            <th class="px-4 py-3 text-right">Avg 80% width</th>
+                            <th class="px-4 py-3 text-right">Relative 80%</th>
+                            <th class="px-4 py-3 text-right">Avg 95% width</th>
+                            <th class="px-4 py-3 text-right">Relative 95%</th>
+                            <th class="px-4 py-3 text-right">Rolling MAE</th>
+                            <th class="px-4 py-3 text-right">Robustness</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        @foreach ([1, 7, 30] as $h)
+                            @php $row = $bestByHorizon[$h] ?? null; @endphp
+                            <tr>
+                                <td class="px-4 py-3 font-medium text-slate-800">{{ $h }}-day · {{ $row['model'] ?? '—' }}</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row && $row['coverage80'] !== null ? $row['coverage80'].'%' : '—' }}</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row && $row['coverage95'] !== null ? $row['coverage95'].'%' : '—' }}</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row['width80'] ?? '—' }}</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row && $row['relativeWidth80'] !== null ? $row['relativeWidth80'].'%' : '—' }}</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row['width95'] ?? '—' }}</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row && $row['relativeWidth95'] !== null ? $row['relativeWidth95'].'%' : '—' }}</td>
+                                <td class="whitespace-nowrap px-4 py-3 text-right text-slate-600">{{ $row && $row['rollingMaeMean'] !== null ? $row['rollingMaeMean'].' ± '.$row['rollingMaeStd'] : '—' }}</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row && $row['robustness'] !== null ? $row['robustness'].'/100' : '—' }}</td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 class="text-lg font-semibold text-slate-900">High-Demand Detection Performance</h2>
+            <p class="mt-1 text-sm text-slate-500">High demand is defined from the training-set 66th percentile. Rates use forecasted versus actual high-demand days.</p>
+            <div class="mt-4 overflow-x-auto">
+                <table class="min-w-full divide-y divide-slate-200 text-sm">
+                    <thead>
+                        <tr class="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            <th class="px-4 py-3">Horizon</th>
+                            <th class="px-4 py-3 text-right">High-day MAE</th>
+                            <th class="px-4 py-3 text-right">Sensitivity</th>
+                            <th class="px-4 py-3 text-right">Specificity</th>
+                            <th class="px-4 py-3 text-right">Precision</th>
+                            <th class="px-4 py-3 text-right">F1-score</th>
+                            <th class="px-4 py-3 text-right">False alerts</th>
+                            <th class="px-4 py-3 text-right">Missed events</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100">
+                        @foreach ([1, 7, 30] as $h)
+                            @php $row = $bestByHorizon[$h] ?? null; @endphp
+                            <tr>
+                                <td class="px-4 py-3 font-medium text-slate-800">{{ $h }}-day</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row['highDemandMae'] ?? '—' }}</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row && $row['sensitivity'] !== null ? $row['sensitivity'].'%' : '—' }}</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row && $row['specificity'] !== null ? $row['specificity'].'%' : '—' }}</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row && $row['precision'] !== null ? $row['precision'].'%' : '—' }}</td>
+                                <td class="px-4 py-3 text-right font-semibold text-slate-700">{{ $row && $row['f1'] !== null ? $row['f1'].'%' : '—' }}</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row && $row['falseAlertRate'] !== null ? $row['falseAlertRate'].'%' : '—' }}</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row && $row['missedEventRate'] !== null ? $row['missedEventRate'].'%' : '—' }}</td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        @if (!empty($sensitivityAnalysis))
+            <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                <h2 class="text-lg font-semibold text-slate-900">Sensitivity Analyses · 7-day Best Model</h2>
+                <p class="mt-1 text-sm text-slate-500">How conclusions change under capacity, threshold, penalty, and outlier assumptions.</p>
+                <div class="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
+                    <div class="rounded-lg border border-slate-100 bg-slate-50/70 p-4">
+                        <h3 class="font-semibold text-slate-800">Capacity sensitivity</h3>
+                        <div class="mt-3 space-y-2 text-sm">
+                            @foreach (($sensitivityAnalysis['capacity'] ?? []) as $name => $item)
+                                <div class="flex items-center justify-between gap-3"><span class="uppercase text-slate-500">{{ $name }} · {{ $item['capacity'] }}/day</span><span class="font-medium text-slate-700">{{ $item['forecast_overload'] }} overload</span></div>
+                            @endforeach
+                        </div>
+                    </div>
+                    <div class="rounded-lg border border-slate-100 bg-slate-50/70 p-4">
+                        <h3 class="font-semibold text-slate-800">Threshold sensitivity</h3>
+                        <div class="mt-3 space-y-2 text-sm">
+                            @foreach (($sensitivityAnalysis['threshold'] ?? []) as $name => $item)
+                                <div class="flex items-center justify-between gap-3"><span class="uppercase text-slate-500">{{ $name }} · cutoff {{ $item['threshold'] }}</span><span class="font-medium text-slate-700">F1 {{ $item['f1_score'] !== null ? $item['f1_score'].'%' : '—' }}</span></div>
+                            @endforeach
+                        </div>
+                    </div>
+                    <div class="rounded-lg border border-slate-100 bg-slate-50/70 p-4">
+                        <h3 class="font-semibold text-slate-800">Penalty sensitivity</h3>
+                        <div class="mt-3 space-y-2 text-sm">
+                            @foreach (($sensitivityAnalysis['penalty'] ?? []) as $name => $item)
+                                <div class="flex items-center justify-between gap-3"><span class="capitalize text-slate-500">{{ str_replace('_', ' ', $name) }}</span><span class="font-medium text-slate-700">{{ $item['weighted_error_rate'] }}% weighted error</span></div>
+                            @endforeach
+                        </div>
+                    </div>
+                    <div class="rounded-lg border border-slate-100 bg-slate-50/70 p-4">
+                        <h3 class="font-semibold text-slate-800">Outlier sensitivity</h3>
+                        @php $outlier = $sensitivityAnalysis['outlier'] ?? []; @endphp
+                        <dl class="mt-3 grid grid-cols-2 gap-3 text-sm">
+                            <div><dt class="text-slate-400">P99 cap</dt><dd class="font-medium text-slate-700">{{ $outlier['winsorization_cap_p99'] ?? '—' }}</dd></div>
+                            <div><dt class="text-slate-400">MAE change</dt><dd class="font-medium text-slate-700">{{ isset($outlier['mae_change_percent']) ? $outlier['mae_change_percent'].'%' : '—' }}</dd></div>
+                        </dl>
+                    </div>
+                </div>
+            </section>
+        @endif
     @else
         <section class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             No model benchmarks yet. Run <code class="font-mono">php artisan medcast:run-forecast</code> to populate the comparison matrix.

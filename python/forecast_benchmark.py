@@ -11,6 +11,7 @@ MEDCAST full research pipeline:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import uuid
@@ -40,7 +41,12 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--input", required=True)
     p.add_argument("--output", required=True)
-    p.add_argument("--holdout", type=int, default=30)
+    p.add_argument(
+        "--holdout",
+        type=int,
+        default=None,
+        help="Optional holdout days. Defaults to a 20%% chronological test split.",
+    )
     p.add_argument("--season-length", type=int, default=7)
     return p.parse_args()
 
@@ -73,6 +79,153 @@ def mase(a, p, y_train, m=7):
     if scale < 1e-9:
         scale = 1.0
     return float(np.mean(np.abs(a - p)) / scale)
+
+
+def safe_rate(numerator: float, denominator: float) -> float | None:
+    if denominator <= 0:
+        return None
+    return float(numerator / denominator)
+
+
+def pct(value: float | None) -> float | None:
+    return None if value is None else round(value * 100.0, 2)
+
+
+def benchmark_diagnostics(actual, rows, y_train, horizon: int, m: int = 7) -> dict:
+    """Compute interval, high-demand classification, and robustness diagnostics."""
+    all_actual = np.asarray(actual, dtype=float)
+    all_point = np.asarray([r["point_forecast"] for r in rows], dtype=float)
+    all_n = min(len(all_actual), len(all_point))
+    all_actual = all_actual[:all_n]
+    all_point = all_point[:all_n]
+
+    actual = all_actual[:horizon]
+    rows = rows[:horizon]
+    point = np.asarray([r["point_forecast"] for r in rows], dtype=float)
+    low80 = np.asarray([r["pi80_low"] for r in rows], dtype=float)
+    high80 = np.asarray([r["pi80_high"] for r in rows], dtype=float)
+    low95 = np.asarray([r["pi95_low"] for r in rows], dtype=float)
+    high95 = np.asarray([r["pi95_high"] for r in rows], dtype=float)
+
+    width80 = high80 - low80
+    width95 = high95 - low95
+    actual_mean = max(float(np.mean(np.abs(actual))), 1e-9)
+
+    high_threshold = float(np.percentile(y_train.values, 66))
+    actual_high = actual > high_threshold
+    predicted_high = point > high_threshold
+    tp = int(np.sum(actual_high & predicted_high))
+    tn = int(np.sum(~actual_high & ~predicted_high))
+    fp = int(np.sum(~actual_high & predicted_high))
+    fn = int(np.sum(actual_high & ~predicted_high))
+
+    sensitivity = safe_rate(tp, tp + fn)
+    specificity = safe_rate(tn, tn + fp)
+    precision = safe_rate(tp, tp + fp)
+    f1 = (
+        safe_rate(2 * precision * sensitivity, precision + sensitivity)
+        if precision is not None and sensitivity is not None
+        else None
+    )
+
+    absolute_errors = np.abs(actual - point)
+    rolling_errors = np.abs(all_actual - all_point)
+    rolling_window = max(1, min(m, horizon, len(rolling_errors)))
+    rolling_mae = np.convolve(
+        rolling_errors,
+        np.ones(rolling_window) / rolling_window,
+        mode="valid",
+    )
+    rolling_mean = float(np.mean(rolling_mae))
+    rolling_std = float(np.std(rolling_mae, ddof=1)) if len(rolling_mae) > 1 else 0.0
+    rolling_cv = rolling_std / max(rolling_mean, 1e-9)
+    robustness_score = max(0.0, 100.0 * (1.0 - min(1.0, rolling_cv)))
+
+    high_errors = absolute_errors[actual_high]
+    p99 = float(np.percentile(y_train.values, 99))
+    winsorized_mae = mae(np.minimum(actual, p99), np.minimum(point, p99))
+    baseline_mae = mae(actual, point)
+
+    threshold_variants = {}
+    for quantile in (60, 66, 75):
+        threshold = float(np.percentile(y_train.values, quantile))
+        truth = actual > threshold
+        predicted = point > threshold
+        vtp = int(np.sum(truth & predicted))
+        vtn = int(np.sum(~truth & ~predicted))
+        vfp = int(np.sum(~truth & predicted))
+        vfn = int(np.sum(truth & ~predicted))
+        vsensitivity = safe_rate(vtp, vtp + vfn)
+        vprecision = safe_rate(vtp, vtp + vfp)
+        vf1 = (
+            safe_rate(2 * vprecision * vsensitivity, vprecision + vsensitivity)
+            if vprecision is not None and vsensitivity is not None
+            else None
+        )
+        threshold_variants[f"p{quantile}"] = {
+            "threshold": round(threshold, 2),
+            "sensitivity": pct(vsensitivity),
+            "specificity": pct(safe_rate(vtn, vtn + vfp)),
+            "precision": pct(vprecision),
+            "f1_score": pct(vf1),
+        }
+
+    penalty_variants = {
+        "balanced": {"missed_event_weight": 1.0, "false_alert_weight": 1.0},
+        "overload_sensitive": {"missed_event_weight": 2.0, "false_alert_weight": 0.5},
+        "resource_conservative": {"missed_event_weight": 0.75, "false_alert_weight": 2.0},
+    }
+    for settings in penalty_variants.values():
+        weighted_errors = (
+            fn * settings["missed_event_weight"] + fp * settings["false_alert_weight"]
+        )
+        settings["weighted_error_rate"] = round(weighted_errors / max(1, len(actual)) * 100.0, 2)
+
+    capacity_variants = {}
+    for quantile in (50, 66, 90):
+        capacity = float(np.percentile(y_train.values, quantile))
+        capacity_variants[f"p{quantile}"] = {
+            "capacity": round(capacity, 2),
+            "actual_exceedance_days": int(np.sum(actual > capacity)),
+            "predicted_exceedance_days": int(np.sum(point > capacity)),
+            "forecast_overload": round(float(np.maximum(point - capacity, 0).sum()), 2),
+        }
+
+    return {
+        "coverage_80": pct(float(np.mean((actual >= low80) & (actual <= high80)))),
+        "coverage_95": pct(float(np.mean((actual >= low95) & (actual <= high95)))),
+        "avg_width_80": round(float(np.mean(width80)), 4),
+        "avg_width_95": round(float(np.mean(width95)), 4),
+        "relative_width_80": round(float(np.mean(width80)) / actual_mean * 100.0, 2),
+        "relative_width_95": round(float(np.mean(width95)) / actual_mean * 100.0, 2),
+        "high_demand_mae": round(float(np.mean(high_errors)), 4) if len(high_errors) else None,
+        "high_demand_days": int(np.sum(actual_high)),
+        "high_demand_threshold": round(high_threshold, 2),
+        "sensitivity": pct(sensitivity),
+        "specificity": pct(specificity),
+        "precision": pct(precision),
+        "f1_score": pct(f1),
+        "false_alert_rate": pct(safe_rate(fp, fp + tn)),
+        "missed_event_rate": pct(safe_rate(fn, fn + tp)),
+        "rolling_mae_mean": round(rolling_mean, 4),
+        "rolling_mae_std": round(rolling_std, 4),
+        "robustness_score": round(robustness_score, 2),
+        "confusion_matrix": {"tp": tp, "tn": tn, "fp": fp, "fn": fn},
+        "sensitivity_analysis": {
+            "capacity": capacity_variants,
+            "threshold": threshold_variants,
+            "penalty": penalty_variants,
+            "outlier": {
+                "winsorization_cap_p99": round(p99, 2),
+                "baseline_mae": round(baseline_mae, 4),
+                "winsorized_mae": round(winsorized_mae, 4),
+                "mae_change_percent": round(
+                    (winsorized_mae - baseline_mae) / max(baseline_mae, 1e-9) * 100.0,
+                    2,
+                ),
+            },
+        },
+    }
 
 
 def clip_nonneg(x):
@@ -445,9 +598,8 @@ def classify_demand(value: float, thr: dict) -> str:
 def main() -> int:
     args = parse_args()
     y = load_series(Path(args.input))
-    holdout = min(args.holdout, max(30, len(y) // 5))
-    if len(y) <= holdout + 60:
-        holdout = min(30, max(14, len(y) // 4))
+    requested_holdout = args.holdout if args.holdout is not None else round(len(y) * 0.20)
+    holdout = max(1, min(int(requested_holdout), len(y) - 60))
 
     train = y.iloc[:-holdout]
     test = y.iloc[-holdout:]
@@ -455,6 +607,7 @@ def main() -> int:
 
     trends = compute_trends(y)
     thresholds = compute_thresholds(y)
+    dataset_fingerprint = hashlib.sha256(y.to_csv().encode("utf-8")).hexdigest()[:12]
 
     benchmarks = []
     forecasts = {}
@@ -485,6 +638,13 @@ def main() -> int:
             for h in HORIZONS:
                 if h > n:
                     continue
+                diagnostics = benchmark_diagnostics(
+                    actual,
+                    ev_rows,
+                    train,
+                    h,
+                    m=args.season_length,
+                )
                 benchmarks.append(
                     {
                         "model_name": model_name,
@@ -492,6 +652,7 @@ def main() -> int:
                         "mae": round(mae(actual[:h], pred[:h]), 4),
                         "rmse": round(rmse(actual[:h], pred[:h]), 4),
                         "mase": round(mase(actual[:h], pred[:h], train, m=args.season_length), 4),
+                        **diagnostics,
                     }
                 )
 
@@ -530,6 +691,15 @@ def main() -> int:
 
     payload = {
         "batch_id": uuid.uuid4().hex,
+        "dataset_version": f"MEDCAST-{dataset_fingerprint}",
+        "dataset_records": int(len(y)),
+        "dataset_coverage_start": y.index.min().date().isoformat(),
+        "dataset_coverage_end": y.index.max().date().isoformat(),
+        "training_records": int(len(train)),
+        "testing_records": int(len(test)),
+        "training_percent": round(len(train) / len(y) * 100.0, 2),
+        "testing_percent": round(len(test) / len(y) * 100.0, 2),
+        "split_method": "chronological_80_20",
         "prophet_backend": "prophet" if HAS_PROPHET else "fourier_fallback",
         "train_start_date": y.index.min().date().isoformat(),
         "train_end_date": y.index.max().date().isoformat(),

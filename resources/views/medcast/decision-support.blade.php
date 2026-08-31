@@ -7,8 +7,9 @@
 @section('content')
     <section class="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Total Beds</p>
+            <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Mean Operational Beds</p>
             <p class="mt-2 text-3xl font-bold text-slate-900">{{ $capacity['total_beds'] }}</p>
+            <p class="mt-1 text-xs text-slate-400">100 base + overflow beds</p>
         </div>
         <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <p class="text-xs font-medium uppercase tracking-wide text-slate-500">Occupied</p>

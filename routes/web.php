@@ -15,6 +15,7 @@ Route::middleware(['auth'])->controller(MedcastController::class)->group(functio
     Route::get('/forecasting', 'forecasting')->name('forecasting');
     Route::post('/forecasting/run', 'runForecast')->name('forecasting.run');
     Route::get('/performance', 'performance')->name('performance');
+    Route::get('/capacity-risk', 'capacityRisk')->name('capacity-risk');
     Route::get('/decision-support', 'decisionSupport')->name('decision-support');
     Route::get('/about', 'about')->name('about');
 });

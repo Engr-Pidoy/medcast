@@ -17,10 +17,13 @@
             <div>
                 <h2 class="text-lg font-semibold text-slate-900">Upload Admissions CSV / Excel</h2>
                 <p class="mt-1 text-sm text-slate-600">
-                    I-upload ang hospital file → automatic import → automatic SARIMA forecast.
+                    Upload the hospital file → merge records by date → automatically refresh all forecasts.
                 </p>
                 <p class="mt-2 text-xs text-slate-500">
                     Expected columns: Date, Daily Admissions, Daily Discharges, Total Occupied Beds, Operational Bed Capacity, Bed Occupancy Rate (%)
+                </p>
+                <p class="mt-1 text-xs font-medium text-blue-700">
+                    Existing dates are updated; new dates are added. Rows not included in the new file are preserved.
                 </p>
             </div>
             <form id="upload-admissions-form" method="POST" action="{{ route('historical.upload') }}" enctype="multipart/form-data" class="flex w-full flex-col gap-2 sm:flex-row sm:items-center lg:w-auto">

@@ -6,11 +6,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git unzip curl ca-certificates gnupg \
-    libsqlite3-dev libzip-dev libpng-dev libonig-dev \
+    libsqlite3-dev libpq-dev libzip-dev libpng-dev libonig-dev \
     python3 python3-pip python3-venv \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
-    && docker-php-ext-install pdo_sqlite pdo_mysql zip bcmath \
+    && docker-php-ext-install pdo_sqlite pdo_pgsql pdo_mysql zip bcmath \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer

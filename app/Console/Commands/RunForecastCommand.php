@@ -10,6 +10,7 @@ use App\Models\ForecastRun;
 use App\Models\Hospital;
 use App\Models\ModelBenchmark;
 use App\Models\ModelEvaluation;
+use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
@@ -20,7 +21,7 @@ class RunForecastCommand extends Command
 {
     protected $signature = 'medcast:run-forecast
                             {--hospital=NDH : Hospital code}
-                            {--holdout=30 : Holdout days used for evaluation}
+                            {--holdout= : Optional holdout days; defaults to a 20% chronological test split}
                             {--python=python : Python executable}';
 
     protected $description = 'Run full MEDCAST benchmark (5 models, 1/7/30 horizons) and save forecasts';
@@ -51,13 +52,18 @@ class RunForecastCommand extends Command
         $this->exportAdmissionsCsv($hospital, $inputCsv);
 
         $this->info('Running multi-model benchmark (Naive, SeasonalNaive, SARIMA, Prophet, HoltWinters)...');
-        $result = Process::timeout(900)->run([
+        $arguments = [
             $this->option('python'),
             $script,
             '--input', $inputCsv,
             '--output', $outputJson,
-            '--holdout', (string) $this->option('holdout'),
-        ]);
+        ];
+        if (filled($this->option('holdout'))) {
+            $arguments[] = '--holdout';
+            $arguments[] = (string) $this->option('holdout');
+        }
+
+        $result = Process::timeout(900)->run($arguments);
 
         if ($result->failed()) {
             $this->error('Benchmark script failed.');
@@ -166,6 +172,28 @@ class RunForecastCommand extends Command
                     'mae' => $row['mae'],
                     'rmse' => $row['rmse'],
                     'mase' => $row['mase'],
+                    'coverage_80' => $row['coverage_80'] ?? null,
+                    'coverage_95' => $row['coverage_95'] ?? null,
+                    'avg_width_80' => $row['avg_width_80'] ?? null,
+                    'avg_width_95' => $row['avg_width_95'] ?? null,
+                    'relative_width_80' => $row['relative_width_80'] ?? null,
+                    'relative_width_95' => $row['relative_width_95'] ?? null,
+                    'high_demand_mae' => $row['high_demand_mae'] ?? null,
+                    'high_demand_days' => $row['high_demand_days'] ?? 0,
+                    'sensitivity' => $row['sensitivity'] ?? null,
+                    'specificity' => $row['specificity'] ?? null,
+                    'precision' => $row['precision'] ?? null,
+                    'f1_score' => $row['f1_score'] ?? null,
+                    'false_alert_rate' => $row['false_alert_rate'] ?? null,
+                    'missed_event_rate' => $row['missed_event_rate'] ?? null,
+                    'rolling_mae_mean' => $row['rolling_mae_mean'] ?? null,
+                    'rolling_mae_std' => $row['rolling_mae_std'] ?? null,
+                    'robustness_score' => $row['robustness_score'] ?? null,
+                    'diagnostics' => [
+                        'high_demand_threshold' => $row['high_demand_threshold'] ?? null,
+                        'confusion_matrix' => $row['confusion_matrix'] ?? null,
+                        'sensitivity_analysis' => $row['sensitivity_analysis'] ?? null,
+                    ],
                     'is_best_for_horizon' => (bool) ($row['is_best_for_horizon'] ?? false),
                     'evaluated_at' => now(),
                 ]);
@@ -185,6 +213,16 @@ class RunForecastCommand extends Command
                     'model_order' => $modelName === 'SARIMA' ? $selectedSarimaOrder : null,
                     'model_params' => [
                         'batch_id' => $batchId,
+                        'dataset_version' => $payload['dataset_version'] ?? null,
+                        'dataset_records' => $payload['dataset_records'] ?? null,
+                        'dataset_coverage_start' => $payload['dataset_coverage_start'] ?? null,
+                        'dataset_coverage_end' => $payload['dataset_coverage_end'] ?? null,
+                        'holdout_days' => $payload['holdout_days'] ?? null,
+                        'training_records' => $payload['training_records'] ?? null,
+                        'testing_records' => $payload['testing_records'] ?? null,
+                        'training_percent' => $payload['training_percent'] ?? null,
+                        'testing_percent' => $payload['testing_percent'] ?? null,
+                        'split_method' => $payload['split_method'] ?? null,
                         'prophet_backend' => $payload['prophet_backend'] ?? null,
                         'best_model_by_horizon' => $payload['best_model_by_horizon'] ?? null,
                         'sarima_order_selection' => $modelName === 'SARIMA' ? $sarimaSelection : null,
@@ -227,7 +265,7 @@ class RunForecastCommand extends Command
                             'hospital_id' => $hospital->id,
                             'forecast_run_id' => $run->id,
                             'period_label' => "Holdout {$h}-day ({$modelName})",
-                            'period_start' => \Carbon\Carbon::parse($end)->subDays(max(0, $h - 1))->toDateString(),
+                            'period_start' => Carbon::parse($end)->subDays(max(0, $h - 1))->toDateString(),
                             'period_end' => $end,
                             'mae' => $b['mae'],
                             'rmse' => $b['rmse'],

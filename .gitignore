@@ -16,6 +16,10 @@ Homestead.json
 Homestead.yaml
 npm-debug.log
 yarn-error.log
+python/__pycache__/
+*.pyc
+docs/_rendered/
+~$*.docx
 /auth.json
 /.fleet
 /.idea

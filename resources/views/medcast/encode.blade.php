@@ -64,14 +64,13 @@
                     <textarea name="notes" rows="2" class="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20">{{ old('notes') }}</textarea>
                 </div>
 
-                <label class="flex items-center gap-2 text-sm text-slate-700">
-                    <input type="checkbox" name="run_forecast" value="1" class="rounded border-slate-300 text-blue-600 focus:ring-blue-500" {{ old('run_forecast') ? 'checked' : '' }}>
-                    Run SARIMA forecast after saving
-                </label>
+                <div class="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+                    Saving this record automatically updates the historical dataset, model comparison, forecasts, capacity risk, and decision-support results.
+                </div>
 
                 <div class="flex flex-col gap-2 sm:flex-row">
                     <button type="submit" class="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700">
-                        Save Daily Record
+                        Save &amp; Update Forecasts
                     </button>
                     <a href="{{ route('historical') }}" class="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">
                         View Historical
@@ -108,7 +107,7 @@
                 <ol class="mt-2 list-decimal space-y-1 pl-4 text-sm text-amber-900/80">
                     <li>Encode today’s totals here, or</li>
                     <li>Upload CSV/Excel in Historical Data</li>
-                    <li>Run Forecast (manual or auto 6:00 AM)</li>
+                    <li>The system automatically refreshes all forecasts after every saved entry.</li>
                 </ol>
             </div>
         </div>
