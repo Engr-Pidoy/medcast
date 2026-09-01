@@ -3,7 +3,9 @@
 use App\Http\Controllers\MedcastController;
 use Illuminate\Support\Facades\Route;
 
-Route::view('/', 'welcome')->name('home');
+Route::get('/', function () {
+    return redirect()->route(auth()->check() ? 'dashboard' : 'login');
+})->name('home');
 
 Route::middleware(['auth'])->controller(MedcastController::class)->group(function () {
     Route::get('/dashboard', 'dashboard')->name('dashboard');
