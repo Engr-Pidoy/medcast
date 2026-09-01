@@ -43,8 +43,12 @@
                     <div class="absolute inset-0 opacity-20" style="background-image: radial-gradient(circle at 20% 20%, #fff 0.8px, transparent 0.9px); background-size: 18px 18px;"></div>
                     <div class="relative flex h-full flex-col">
                         <div class="flex items-center gap-4">
-                            <div class="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/15 text-xl font-bold ring-1 ring-white/30 backdrop-blur">
-                                N
+                            <div class="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white p-1 shadow-md ring-2 ring-white/40">
+                                <img
+                                    src="{{ asset('images/norala-national-high-school-logo.jpg') }}"
+                                    alt="Norala National High School logo"
+                                    class="h-full w-full rounded-full object-contain"
+                                >
                             </div>
                             <div>
                                 <p class="text-xs font-semibold uppercase tracking-[0.2em] text-nnhs-gold">Norala, South Cotabato</p>

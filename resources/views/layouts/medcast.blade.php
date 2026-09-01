@@ -46,7 +46,13 @@
 
         <aside id="sidebar" class="fixed inset-y-0 left-0 z-40 flex w-64 -translate-x-full flex-col bg-slate-900 text-slate-300 transition-transform duration-200 lg:static lg:translate-x-0">
             <div class="flex h-16 items-center gap-3 border-b border-slate-700/60 px-5">
-                <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600 text-sm font-bold text-white">M</div>
+                <div class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white p-0.5 ring-1 ring-white/30">
+                    <img
+                        src="{{ asset('images/norala-national-high-school-logo.jpg') }}"
+                        alt="Norala National High School logo"
+                        class="h-full w-full rounded-full object-contain"
+                    >
+                </div>
                 <div>
                     <p class="text-lg font-bold tracking-wide text-white">MEDCAST</p>
                     <p class="text-[10px] uppercase tracking-wider text-slate-500">Forecasting System</p>
