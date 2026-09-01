@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
         "--holdout",
         type=int,
         default=None,
-        help="Optional holdout days. Defaults to a 20%% chronological test split.",
+        help="Optional rolling-origin evaluation days. Defaults to the newest 20%%.",
     )
     p.add_argument("--season-length", type=int, default=7)
     return p.parse_args()
@@ -91,16 +91,13 @@ def pct(value: float | None) -> float | None:
     return None if value is None else round(value * 100.0, 2)
 
 
-def benchmark_diagnostics(actual, rows, y_train, horizon: int, m: int = 7) -> dict:
-    """Compute interval, high-demand classification, and robustness diagnostics."""
-    all_actual = np.asarray(actual, dtype=float)
-    all_point = np.asarray([r["point_forecast"] for r in rows], dtype=float)
-    all_n = min(len(all_actual), len(all_point))
-    all_actual = all_actual[:all_n]
-    all_point = all_point[:all_n]
-
-    actual = all_actual[:horizon]
-    rows = rows[:horizon]
+def benchmark_diagnostics(actual, rows, y_train, m: int = 7) -> dict:
+    """Compute diagnostics across all eligible rolling forecast origins."""
+    actual = np.asarray(actual, dtype=float)
+    point_all = np.asarray([r["point_forecast"] for r in rows], dtype=float)
+    n = min(len(actual), len(point_all))
+    actual = actual[:n]
+    rows = rows[:n]
     point = np.asarray([r["point_forecast"] for r in rows], dtype=float)
     low80 = np.asarray([r["pi80_low"] for r in rows], dtype=float)
     high80 = np.asarray([r["pi80_high"] for r in rows], dtype=float)
@@ -129,8 +126,8 @@ def benchmark_diagnostics(actual, rows, y_train, horizon: int, m: int = 7) -> di
     )
 
     absolute_errors = np.abs(actual - point)
-    rolling_errors = np.abs(all_actual - all_point)
-    rolling_window = max(1, min(m, horizon, len(rolling_errors)))
+    rolling_errors = np.abs(actual - point)
+    rolling_window = max(1, min(m, len(rolling_errors)))
     rolling_mae = np.convolve(
         rolling_errors,
         np.ones(rolling_window) / rolling_window,
@@ -540,6 +537,69 @@ def forecast_model(name: str, y: pd.Series, steps: int, sarima_selection: dict |
     raise ValueError(name)
 
 
+def reusable_sarima_selection(selection: dict | None) -> dict | None:
+    """Keep the selected specification while forcing a fresh fit at each origin."""
+    if selection is None:
+        return None
+
+    return {
+        "selection_criterion": selection["selection_criterion"],
+        "selected": selection["selected"],
+        "candidates": selection["candidates"],
+    }
+
+
+def rolling_origin_evaluation(
+    model_name: str,
+    y: pd.Series,
+    initial_train_size: int,
+    horizons: list[int],
+    sarima_selection: dict | None = None,
+) -> dict[int, dict]:
+    """
+    Evaluate an expanding-window forecast at every daily origin.
+
+    Each horizon uses the forecast made exactly h days before its target. The
+    initial training boundary stays fixed, while observations revealed during
+    the evaluation period are added to the next origin's training history.
+    """
+    results = {
+        horizon: {
+            "actual": [],
+            "rows": [],
+            "origin_dates": [],
+            "target_dates": [],
+        }
+        for horizon in horizons
+    }
+    max_horizon = max(horizons)
+    sarima_template = reusable_sarima_selection(sarima_selection)
+
+    for origin_index in range(initial_train_size, len(y)):
+        available_steps = len(y) - origin_index
+        steps = min(max_horizon, available_steps)
+        history = y.iloc[:origin_index]
+        rows, _meta = forecast_model(
+            model_name,
+            history,
+            steps,
+            sarima_selection=sarima_template,
+        )
+        origin_date = history.index.max().date().isoformat()
+
+        for horizon in horizons:
+            if horizon > available_steps:
+                continue
+
+            target_index = origin_index + horizon - 1
+            results[horizon]["actual"].append(float(y.iloc[target_index]))
+            results[horizon]["rows"].append(rows[horizon - 1])
+            results[horizon]["origin_dates"].append(origin_date)
+            results[horizon]["target_dates"].append(y.index[target_index].date().isoformat())
+
+    return results
+
+
 def compute_trends(y: pd.Series) -> dict:
     by_weekday = (
         y.groupby(y.index.day_name())
@@ -603,7 +663,6 @@ def main() -> int:
 
     train = y.iloc[:-holdout]
     test = y.iloc[-holdout:]
-    steps = holdout
 
     trends = compute_trends(y)
     thresholds = compute_thresholds(y)
@@ -613,6 +672,7 @@ def main() -> int:
     forecasts = {}
     model_errors = {}
     sarima_selection_meta = None
+    evaluation_sarima_selection_meta = None
 
     # Select SARIMA order once on full series using AIC/BIC (for reporting + live forecast)
     full_sarima_selection = select_sarima_order(y)
@@ -624,34 +684,45 @@ def main() -> int:
 
     for model_name in MODELS:
         try:
-            # evaluation on holdout using train-only fit
-            # For SARIMA evaluation, re-select on train only (honest holdout)
+            # Select the SARIMA specification on the initial training set only.
+            # Parameters are then refitted on each expanding rolling origin.
             train_sel = select_sarima_order(train) if model_name == "SARIMA" else None
-            ev_rows, _meta = forecast_model(model_name, train, steps, sarima_selection=train_sel)
-            pred = np.array([r["point_forecast"] for r in ev_rows], dtype=float)
-            actual = test.values.astype(float)
-            # align lengths
-            n = min(len(pred), len(actual))
-            pred = pred[:n]
-            actual = actual[:n]
+            if train_sel is not None:
+                evaluation_sarima_selection_meta = reusable_sarima_selection(train_sel)
+            rolling = rolling_origin_evaluation(
+                model_name,
+                y,
+                initial_train_size=len(train),
+                horizons=HORIZONS,
+                sarima_selection=train_sel,
+            )
 
             for h in HORIZONS:
-                if h > n:
+                evaluation = rolling[h]
+                actual = np.asarray(evaluation["actual"], dtype=float)
+                rows = evaluation["rows"]
+                if len(actual) == 0:
                     continue
+                pred = np.asarray([row["point_forecast"] for row in rows], dtype=float)
                 diagnostics = benchmark_diagnostics(
                     actual,
-                    ev_rows,
+                    rows,
                     train,
-                    h,
                     m=args.season_length,
                 )
                 benchmarks.append(
                     {
                         "model_name": model_name,
                         "horizon_days": h,
-                        "mae": round(mae(actual[:h], pred[:h]), 4),
-                        "rmse": round(rmse(actual[:h], pred[:h]), 4),
-                        "mase": round(mase(actual[:h], pred[:h], train, m=args.season_length), 4),
+                        "mae": round(mae(actual, pred), 4),
+                        "rmse": round(rmse(actual, pred), 4),
+                        "mase": round(mase(actual, pred, train, m=args.season_length), 4),
+                        "evaluation_method": "expanding_window_rolling_origin",
+                        "origin_count": int(len(actual)),
+                        "origin_start_date": evaluation["origin_dates"][0],
+                        "origin_end_date": evaluation["origin_dates"][-1],
+                        "target_start_date": evaluation["target_dates"][0],
+                        "target_end_date": evaluation["target_dates"][-1],
                         **diagnostics,
                     }
                 )
@@ -699,10 +770,16 @@ def main() -> int:
         "testing_records": int(len(test)),
         "training_percent": round(len(train) / len(y) * 100.0, 2),
         "testing_percent": round(len(test) / len(y) * 100.0, 2),
-        "split_method": "chronological_80_20",
+        "split_method": "chronological_80_20_expanding_window_rolling_origin",
+        "evaluation_method": "expanding_window_rolling_origin",
+        "rolling_origin_step_days": 1,
+        "evaluation_origin_counts": {
+            str(h): max(0, len(test) - h + 1) for h in HORIZONS
+        },
         "prophet_backend": "prophet" if HAS_PROPHET else "fourier_fallback",
         "train_start_date": y.index.min().date().isoformat(),
         "train_end_date": y.index.max().date().isoformat(),
+        "initial_train_end_date": train.index.max().date().isoformat(),
         "holdout_days": holdout,
         "trends": trends,
         "thresholds": thresholds,
@@ -712,6 +789,7 @@ def main() -> int:
         "forecasts": forecasts,
         "model_errors": model_errors,
         "sarima_order_selection": sarima_selection_meta,
+        "evaluation_sarima_order_selection": evaluation_sarima_selection_meta,
         "selected_sarima_order": selected_order,
         "monthly_outlook": monthly_outlook,
     }

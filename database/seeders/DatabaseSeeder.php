@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Models\DailyAdmission;
 use App\Models\User;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
@@ -33,6 +34,10 @@ class DatabaseSeeder extends Seeder
             ]
         );
 
-        $this->call(MedcastSeeder::class);
+        // Never replace operator-uploaded production data during a later seed.
+        // The bundled dataset is bootstrap data only for an empty installation.
+        if (! DailyAdmission::query()->exists()) {
+            $this->call(MedcastSeeder::class);
+        }
     }
 }

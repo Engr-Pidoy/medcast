@@ -2,7 +2,7 @@
 
 @section('title', 'Model Performance')
 @section('page-title', 'Model Performance')
-@section('page-subtitle', 'Multi-model benchmark comparison across 1 / 7 / 30-day horizons')
+@section('page-subtitle', 'Expanding-window rolling-origin comparison across 1 / 7 / 30-day horizons')
 
 @section('content')
     <section class="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
@@ -45,11 +45,16 @@
                 <h2 class="mt-1 text-lg font-bold text-slate-900">{{ $datasetInfo['version'] }}</h2>
                 <p class="mt-1 text-sm text-slate-600">Coverage: {{ $datasetInfo['coverage'] }} · {{ number_format($datasetInfo['records']) }} daily observations</p>
                 <p class="mt-1 text-sm font-medium text-blue-800">Chronological split: {{ $datasetInfo['training_percent'] }}% training ({{ number_format($datasetInfo['training_records']) }}) / {{ $datasetInfo['testing_percent'] }}% testing ({{ number_format($datasetInfo['testing_records']) }})</p>
+                <p class="mt-1 text-sm font-medium text-blue-800">Evaluation: {{ $datasetInfo['evaluation_label'] }} · {{ $datasetInfo['rolling_origin_step_days'] }}-day origin step · models refitted as new evaluation observations become available</p>
             </div>
-            <dl class="grid grid-cols-2 gap-x-8 gap-y-2 text-sm lg:text-right">
+            <dl class="grid grid-cols-2 gap-x-8 gap-y-2 text-sm lg:grid-cols-3 lg:text-right">
                 <div>
-                    <dt class="text-xs uppercase tracking-wide text-slate-400">Holdout</dt>
+                    <dt class="text-xs uppercase tracking-wide text-slate-400">Evaluation period</dt>
                     <dd class="mt-1 font-semibold text-slate-700">{{ $datasetInfo['holdout_days'] }} days (20%)</dd>
+                </div>
+                <div>
+                    <dt class="text-xs uppercase tracking-wide text-slate-400">Initial train end</dt>
+                    <dd class="mt-1 font-semibold text-slate-700">{{ $datasetInfo['initial_train_end_date'] ?? '—' }}</dd>
                 </div>
                 <div>
                     <dt class="text-xs uppercase tracking-wide text-slate-400">Evaluated</dt>
@@ -69,6 +74,7 @@
                         <p class="mt-1 text-xs text-slate-500">
                             MAE {{ $bestByHorizon[$h]['mae'] }} · RMSE {{ $bestByHorizon[$h]['rmse'] }} · MASE {{ $bestByHorizon[$h]['mase'] }}
                         </p>
+                        <p class="mt-1 text-xs text-slate-400">{{ $bestByHorizon[$h]['diagnostics']['evaluation']['origin_count'] ?? '—' }} eligible rolling origins</p>
                     @else
                         <p class="mt-2 text-lg font-semibold text-slate-400">—</p>
                     @endif
@@ -76,12 +82,19 @@
             @endforeach
         </section>
 
-        @if (!empty($sarimaCandidates))
+        @if (!empty($sarimaCandidates) || !empty($evaluationSarimaSelected))
             <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                <h2 class="mb-1 text-lg font-semibold text-slate-900">SARIMA Order Selection (AIC / BIC)</h2>
+                <h2 class="mb-1 text-lg font-semibold text-slate-900">Full-History SARIMA Order Selection (Live Forecast)</h2>
                 <p class="mb-2 text-sm text-slate-500">
                     {{ $sarimaCriterion ?? 'Candidate SARIMA orders compared using AIC (primary) and BIC.' }}
                 </p>
+                @if (!empty($evaluationSarimaSelected))
+                    <p class="mb-2 text-sm text-blue-700">
+                        Rolling-origin evaluation order selected from the initial 80% training set:
+                        <span class="font-semibold">{{ $evaluationSarimaSelected['model_order'] ?? '—' }}</span>.
+                        This specification is held fixed while its parameters are refitted at each origin.
+                    </p>
+                @endif
                 @if (!empty($sarimaSelected))
                     <p class="mb-4 text-sm text-slate-700">
                         Selected order:
@@ -168,12 +181,13 @@
 
         <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <h2 class="text-lg font-semibold text-slate-900">Prediction-Interval Quality by Horizon</h2>
-            <p class="mt-1 text-sm text-slate-500">Coverage shows how often actual admissions fell inside the interval. Relative width is normalized against mean actual demand; robustness measures rolling error stability within the holdout without model refitting.</p>
+            <p class="mt-1 text-sm text-slate-500">Coverage shows how often actual admissions fell inside the interval across eligible rolling origins. Relative width is normalized against mean actual demand; robustness summarizes the stability of the ordered rolling-origin errors.</p>
             <div class="mt-4 overflow-x-auto">
                 <table class="min-w-full divide-y divide-slate-200 text-sm">
                     <thead>
                         <tr class="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                             <th class="px-4 py-3">Horizon / best model</th>
+                            <th class="px-4 py-3 text-right">Origins</th>
                             <th class="px-4 py-3 text-right">80% coverage</th>
                             <th class="px-4 py-3 text-right">95% coverage</th>
                             <th class="px-4 py-3 text-right">Avg 80% width</th>
@@ -189,6 +203,7 @@
                             @php $row = $bestByHorizon[$h] ?? null; @endphp
                             <tr>
                                 <td class="px-4 py-3 font-medium text-slate-800">{{ $h }}-day · {{ $row['model'] ?? '—' }}</td>
+                                <td class="px-4 py-3 text-right text-slate-600">{{ $row['diagnostics']['evaluation']['origin_count'] ?? '—' }}</td>
                                 <td class="px-4 py-3 text-right text-slate-600">{{ $row && $row['coverage80'] !== null ? $row['coverage80'].'%' : '—' }}</td>
                                 <td class="px-4 py-3 text-right text-slate-600">{{ $row && $row['coverage95'] !== null ? $row['coverage95'].'%' : '—' }}</td>
                                 <td class="px-4 py-3 text-right text-slate-600">{{ $row['width80'] ?? '—' }}</td>

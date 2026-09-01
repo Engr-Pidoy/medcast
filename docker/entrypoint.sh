@@ -4,7 +4,6 @@ set -euo pipefail
 cd /var/www/html
 
 mkdir -p database storage/framework/{cache,sessions,views} storage/logs storage/app/medcast bootstrap/cache
-touch database/database.sqlite
 chmod -R 775 storage bootstrap/cache database || true
 
 if [ -z "${APP_KEY:-}" ]; then
@@ -12,8 +11,22 @@ if [ -z "${APP_KEY:-}" ]; then
   echo "WARNING: APP_KEY was missing; generated a temporary key for this boot."
 fi
 
+DATABASE_CONNECTION_URL="${DB_URL:-${DATABASE_URL:-}}"
+if [ -z "${DB_CONNECTION:-}" ] && [[ "${DATABASE_CONNECTION_URL}" == postgres://* || "${DATABASE_CONNECTION_URL}" == postgresql://* ]]; then
+  export DB_CONNECTION="pgsql"
+fi
+
 export DB_CONNECTION="${DB_CONNECTION:-sqlite}"
-export DB_DATABASE="${DB_DATABASE:-/var/www/html/database/database.sqlite}"
+
+if [ "${APP_ENV:-production}" = "production" ] && [ "${DB_CONNECTION}" = "sqlite" ]; then
+  echo "ERROR: Production cannot use the container-local SQLite database because it is erased on restart. Configure DB_CONNECTION=pgsql and DB_URL/DATABASE_URL to a persistent PostgreSQL database."
+  exit 1
+fi
+
+if [ "${DB_CONNECTION}" = "sqlite" ]; then
+  export DB_DATABASE="${DB_DATABASE:-/var/www/html/database/database.sqlite}"
+  touch "${DB_DATABASE}"
+fi
 
 php artisan config:clear || true
 php artisan migrate --force

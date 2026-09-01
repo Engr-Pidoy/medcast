@@ -23,7 +23,7 @@
                     Expected columns: Date, Daily Admissions, Daily Discharges, Total Occupied Beds, Operational Bed Capacity, Bed Occupancy Rate (%)
                 </p>
                 <p class="mt-1 text-xs font-medium text-blue-700">
-                    Existing dates are updated; new dates are added. Rows not included in the new file are preserved.
+                    Existing dates are updated, new dates are added, and rows not included in the new file are preserved in the persistent database. If one file repeats a date, its last row is retained.
                 </p>
             </div>
             <form id="upload-admissions-form" method="POST" action="{{ route('historical.upload') }}" enctype="multipart/form-data" class="flex w-full flex-col gap-2 sm:flex-row sm:items-center lg:w-auto">

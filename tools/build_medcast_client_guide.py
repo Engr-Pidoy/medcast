@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import date
 from pathlib import Path
 
@@ -15,7 +16,12 @@ from docx.shared import Inches, Pt, RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "docs" / "MEDCAST_Client_User_and_Technical_Guide.docx"
+OUTPUT = Path(
+    os.getenv(
+        "MEDCAST_GUIDE_OUTPUT",
+        ROOT / "docs" / "MEDCAST_Client_User_and_Technical_Guide.docx",
+    )
+)
 BENCHMARK = ROOT / "storage" / "app" / "medcast" / "benchmark_result.json"
 
 BLUE = "2E74B5"
@@ -481,11 +487,11 @@ def build() -> Path:
     quick_rows = [
         ["What is MEDCAST?", "A research web application that forecasts daily hospital admissions, evaluates several forecasting models, summarizes bed occupancy, and converts forecast results into planning-oriented risk indicators."],
         ["What hospital is represented?", "The current implementation is scoped to NDH and uses the NDH hospital code internally."],
-        ["What data split is used?", "Chronological 80% training and 20% holdout/testing. Older records train the models; the newest records test them."],
+        ["What data split is used?", "Chronological 80% initial training and 20% rolling-origin evaluation. Within the newest 20%, each daily origin adds newly revealed observations to an expanding training window before the next refit."],
         ["Why 120 beds?", "The occupancy calculation uses a mean operational capacity of 120 beds: 100 regular/base beds plus overflow or additional beds used when demand exceeds the regular count."],
         ["Can occupied beds exceed 100?", "Yes. The source discussion explains that overflow beds may be added. That is why the operational assumption is 120 rather than limiting every day to 100."],
         ["Is daily admissions capacity also 120?", "No. Capacity Risk uses an admission-handling capacity per day derived from historical admission percentiles or a custom input. Bed capacity and daily admission capacity are different measures."],
-        ["Why is the best model not always SARIMA?", "Model choice is evidence-based. MEDCAST compares candidate models on the holdout period and selects the best model per horizon. SARIMA remains a benchmark and powers the separate monthly research outlook."],
+        ["Why is the best model not always SARIMA?", "Model choice is evidence-based. MEDCAST compares candidate models across expanding-window rolling origins and selects the best model per horizon. SARIMA remains a benchmark and powers the separate monthly research outlook."],
         ["What do 1, 7, and 30 days mean?", "They are forecast horizons: tomorrow, the next week, and the next 30 days. Accuracy and uncertainty commonly differ by horizon."],
         ["Can the result be used as an official directive?", "No. It is decision support. Hospital leaders must validate current census, staffing, policy, outbreaks, scheduled services, and other context before acting."],
     ]
@@ -505,7 +511,7 @@ def build() -> Path:
             ["Dataset version", snapshot.get("dataset_version", "—")],
             ["Coverage", f"{snapshot.get('dataset_coverage_start', '—')} to {snapshot.get('dataset_coverage_end', '—')}"],
             ["Records", f"{snapshot.get('dataset_records', '—')} daily records"],
-            ["Split", f"{snapshot.get('training_records', '—')} training (80%) / {snapshot.get('testing_records', '—')} testing (20%)"],
+            ["Evaluation design", f"{snapshot.get('training_records', '—')} initial training (80%) / {snapshot.get('testing_records', '—')} rolling evaluation days (20%)"],
             ["Best model by horizon", best_text],
             ["Selected SARIMA order", snapshot.get("selected_sarima_order", "—")],
         ], [2700, 6660])
@@ -522,7 +528,7 @@ def build() -> Path:
     add_heading(doc, "2.2 Intended users", 2)
     add_bullets(doc, [
         "Hospital administrator or operations lead — reviews demand, occupancy, capacity pressure, and preparedness guidance.",
-        "Researcher or thesis reviewer — inspects model comparisons, holdout design, prediction-interval behavior, and sensitivity analyses.",
+        "Researcher or thesis reviewer — inspects rolling-origin comparisons, prediction-interval behavior, and sensitivity analyses.",
         "Data encoder — enters or imports daily counts and checks that totals and dates are correct.",
         "System administrator — controls access, verifies the deployment, backs up data, and triggers model reruns when appropriate.",
     ])
@@ -532,12 +538,14 @@ def build() -> Path:
         "Daily data are encoded manually or imported from a CSV/Excel file.",
         "MEDCAST stores the historical observations and validates the date/count fields.",
         "The forecasting pipeline converts the series to daily frequency and prepares missing dates if needed.",
-        "The oldest 80% of observations train the candidate models; the newest 20% serve as the holdout/test period.",
-        "Naive, Seasonal Naive, SARIMA, Prophet, and Holt-Winters forecasts are compared for 1-, 7-, and 30-day horizons.",
+        "The oldest 80% establishes the initial training window; the newest 20% defines the rolling-origin evaluation period.",
+        "At each daily origin, the training history expands with newly revealed observations, each model is refitted, and 1-, 7-, and 30-day-ahead forecasts are evaluated where targets are available.",
+        "Naive, Seasonal Naive, SARIMA, Prophet, and Holt-Winters are compared using aggregate errors across all eligible origins for each horizon.",
         "The app stores forecasts, prediction intervals, evaluation metrics, thresholds, and model metadata.",
         "Dashboard, Forecasting, Performance, Capacity Risk, and Decision Support pages present different views of the same analytical workflow.",
     ])
 
+    page_break(doc)
     add_heading(doc, "2.4 Technology overview", 2)
     add_table(doc, ["Layer", "Role"], [
         ["Laravel / PHP", "Application routes, authentication, data management, and server-side orchestration"],
@@ -546,12 +554,11 @@ def build() -> Path:
         ["Database + generated artifacts", "Historical records, forecast runs, benchmark outputs, figures, and traceability metadata"],
     ], [2500, 6860])
 
-    page_break(doc)
-
     add_heading(doc, "3. Core Assumptions and Definitions", 1)
-    add_heading(doc, "3.1 Chronological 80/20 split", 2)
-    add_body(doc, "The dataset is split by time, not randomly. The first 80% of daily observations are used for model training, while the most recent 20% are held out for testing. This imitates real forecasting: a model must predict future-like observations that were not used to fit it.")
+    add_heading(doc, "3.1 Chronological 80/20 rolling-origin evaluation", 2)
+    add_body(doc, "The dataset is split by time, not randomly. The first 80% establishes the initial model-training window, while the most recent 20% defines the evaluation period. Starting at that boundary, MEDCAST advances the forecast origin one day at a time. After each actual observation becomes available, it is added to the expanding training window before the models are refitted for the next origin.")
     add_callout(doc, "Why chronological?", "Randomly mixing future and past observations can leak information and make time-series accuracy look better than it really is. Chronological splitting preserves order.")
+    add_callout(doc, "Eligible origins", "A 1-day horizon uses every evaluation origin. A 7-day or 30-day horizon uses fewer origins because enough future actual observations must remain to score that lead time. The app reports the origin count for every horizon.", "gold")
 
     add_heading(doc, "3.2 Capacity terms that must not be mixed", 2)
     add_table(doc, ["Term", "Meaning", "Current basis"], [
@@ -611,9 +618,9 @@ def build() -> Path:
     ], [2400, 6960])
 
     add_heading(doc, "4.3 Historical Data", 2)
-    add_body(doc, "This page supports record review and bulk data import. Monthly aggregation helps users inspect longer patterns. An import replaces the active dataset and normally triggers a new forecasting run, so the uploaded file must be validated first.")
+    add_body(doc, "This page supports record review and bulk data import. Monthly aggregation helps users inspect longer patterns. An import merges rows by date: new dates are added and matching dates are updated. The merged records are stored in the persistent database and normally trigger a new forecasting run, so the uploaded file must be validated first.")
     add_bullets(doc, [
-        "Back up the current dataset before replacement.",
+        "Back up the current dataset before a large merge or correction.",
         "Confirm the date column and admissions column are mapped correctly.",
         "Check for duplicate dates, gaps, negative values, text in numeric fields, and unexpected totals.",
         "After import, confirm dataset version, coverage dates, record count, and latest date on Model Performance or Dashboard.",
@@ -625,7 +632,7 @@ def build() -> Path:
     add_heading(doc, "4.5 Forecasting", 2)
     add_body(doc, "The Forecasting page is the detailed forecast view. Select a 1-, 7-, or 30-day horizon, then review the model, daily point forecasts, and prediction intervals. Use the model-comparison area to see how alternatives performed.")
     add_table(doc, ["Element", "Meaning"], [
-        ["Selected/active model", "Model chosen for that horizon from holdout performance"],
+        ["Selected/active model", "Model chosen for that horizon from rolling-origin performance"],
         ["Point forecast", "Single best estimate for a future day"],
         ["80% prediction interval", "Narrower plausible range with lower target coverage"],
         ["95% prediction interval", "Wider plausible range with higher target coverage"],
@@ -635,7 +642,7 @@ def build() -> Path:
     add_callout(doc, "Best practice", "For operations, report a range and scenario—not only the point forecast. The longer the horizon, the more important the interval becomes.")
 
     add_heading(doc, "4.6 Model Performance", 2)
-    add_body(doc, "This page provides the audit trail behind the model choice. It contains basic errors, prediction-interval quality, high-demand classification metrics, rolling-window robustness, SARIMA order selection, sensitivity analyses, and dataset version/coverage information.")
+    add_body(doc, "This page provides the audit trail behind the model choice. It contains rolling-origin counts and dates, basic errors, prediction-interval quality, high-demand classification metrics, error robustness, SARIMA order selection, sensitivity analyses, and dataset version/coverage information.")
     add_bullets(doc, [
         "Use MAE/MASE to compare average forecast error; use RMSE when large errors deserve extra attention.",
         "Review coverage together with width. Very wide intervals can achieve high coverage without being operationally useful.",
@@ -663,11 +670,11 @@ def build() -> Path:
     ], [1900, 4400, 3060], font_size=8.8)
 
     add_heading(doc, "5.1 How the best model is chosen", 2)
-    add_body(doc, "Candidate models are evaluated on the chronological holdout. The app identifies a best model for each horizon, using scaled error (MASE) as the primary comparison and MAE/RMSE as tie-break or supporting evidence. The primary operational model is tied to the 7-day comparison because weekly planning is the central use case.")
+    add_body(doc, "Candidate models are evaluated through an expanding-window rolling-origin procedure inside the chronological 20% evaluation period. For each eligible origin, the model is refitted using only information available by that date and the exact 1-, 7-, or 30-day-ahead prediction is scored. The app aggregates the errors across origins and identifies a best model for each horizon, using scaled error (MASE) as the primary comparison and MAE/RMSE as supporting evidence. The primary operational model is tied to the 7-day comparison because weekly planning is the central use case.")
     add_callout(doc, "Important", "A model name is not a permanent winner. New data, a different split, or a changed outlier pattern can alter the ranking. This is expected behavior, not an error.")
 
     add_heading(doc, "5.2 SARIMA order selection", 2)
-    add_body(doc, "The pipeline evaluates candidate SARIMA specifications and records information criteria such as AIC and BIC. Lower values indicate a better balance of fit and complexity among the candidates being compared. These criteria select the SARIMA specification; holdout forecasting metrics compare SARIMA against the other model families.")
+    add_body(doc, "The pipeline evaluates candidate SARIMA specifications and records information criteria such as AIC and BIC. The evaluation specification is selected using only the initial 80% training set, then its parameters are refitted at each rolling origin. A separate full-history selection supports the current live forecast. This separation prevents future evaluation observations from choosing the benchmark specification.")
 
     add_heading(doc, "5.3 Missing-day preparation", 2)
     add_body(doc, "The Python pipeline regularizes the observations to a daily series. If a date is missing, the series is completed and missing values are interpolated, with backward/forward filling as safeguards. This supports model execution, but repeated gaps should be corrected at the source because imputation is not equivalent to observed hospital data.")
@@ -715,8 +722,8 @@ def build() -> Path:
     ], [1900, 2900, 4560], font_size=8.6)
     add_body(doc, "TP = true positive, TN = true negative, FP = false positive, and FN = false negative. A metric may be undefined when its denominator is zero—for example, if the evaluated window contains no actual high-demand day.", style="Small Note")
 
-    add_heading(doc, "6.4 Rolling-window robustness", 2)
-    add_body(doc, "MEDCAST computes forecast errors across rolling windows within the holdout period without refitting the model for every window. It summarizes rolling MAE mean and variation. The robustness score is 100 × (1 − min(1, coefficient of variation of rolling MAE)). A higher score means the error was more stable across windows; it does not automatically mean the error was small.")
+    add_heading(doc, "6.4 Rolling-origin robustness", 2)
+    add_body(doc, "MEDCAST orders the absolute errors produced by the daily rolling origins and computes a short rolling average over those errors. It summarizes the rolling MAE mean and variation. The robustness score is 100 × (1 − min(1, coefficient of variation of rolling MAE)). A higher score means the errors were more stable across origins; it does not automatically mean the errors were small.")
 
     page_break(doc)
     add_heading(doc, "7. Strong Evaluation and Sensitivity Analysis", 1)
@@ -744,7 +751,7 @@ def build() -> Path:
 
     page_break(doc)
     add_heading(doc, "8. Capacity-Risk Scenarios", 1)
-    add_heading(doc, "8.1 Controls", 2)
+    add_heading(doc, "8.1\u00a0Controls", 2)
     add_table(doc, ["Control", "Options", "Effect"], [
         ["Forecast horizon", "1, 7, or 30 days", "Chooses the matching best model and future forecast window"],
         ["Capacity scenario", "Constrained (P50), Moderate (P66), Expanded (P90), or Custom", "Sets the assumed number of admissions that can be handled per day"],
@@ -821,8 +828,6 @@ def build() -> Path:
 
     add_callout(doc, "Escalation principle", "A High or Critical label should trigger review and coordination. It should not trigger an irreversible action without current operational confirmation and authorized approval.")
 
-    page_break(doc)
-
     add_heading(doc, "10. Data Entry and Import Reference", 1)
     add_heading(doc, "10.1 Minimum data quality rules", 2)
     add_bullets(doc, [
@@ -859,7 +864,7 @@ def build() -> Path:
 
     add_heading(doc, "10.4 When to rerun forecasting", 2)
     add_bullets(doc, [
-        "After replacing the dataset",
+        "After importing or updating the dataset",
         "After correcting material historical errors",
         "After adding a meaningful block of new daily observations",
         "Before a formal report when the displayed run may be stale",
@@ -887,7 +892,7 @@ def build() -> Path:
         ["Occupancy exceeds 100%", "Occupied beds exceed the 120 mean operational capacity", "Confirm census and overflow use; treat as pressure, not an automatic data error"],
         ["Occupied beds exceed 100 beds", "Overflow/additional beds are represented", "Use the documented 120-bed operational assumption"],
         ["Capacity Risk seems inconsistent with beds", "Scenario capacity is admissions/day, not bed count", "Recheck units and the selected scenario"],
-        ["Rerun takes time", "Models are fitted synchronously and several candidates are tested", "Avoid repeated clicks; wait for completion and check the latest batch"],
+        ["Rerun takes time", "Five models are repeatedly refitted across daily rolling origins", "Avoid repeated clicks; wait for completion and check the latest batch"],
     ], [2500, 3000, 3860], font_size=8.2)
 
     add_heading(doc, "11.3 Access and deployment hygiene", 2)
@@ -907,18 +912,17 @@ def build() -> Path:
         ["Single-hospital scope", "Findings and thresholds are specific to the current NDH data and assumptions"],
         ["Aggregate daily admissions", "Does not fully represent acuity, ward-level demand, service line, or length of stay"],
         ["Category availability", "Imported aggregate data may not support meaningful regular/emergency/other comparisons"],
-        ["Single chronological holdout", "Performance can vary in another period; the rolling robustness view is not full repeated rolling-origin refitting"],
+        ["One historical evaluation period", "Rolling-origin refitting is stronger than one fixed-origin forecast, but performance can still differ in another calendar period or under a structural change"],
         ["Prediction-interval approximations", "Some model intervals and the scaled Prophet 95% interval rely on simplifying assumptions"],
         ["Capacity probability approximation", "Normal-error and daily-independence assumptions may not hold exactly"],
         ["Historical dependence", "Outbreaks, policy changes, closures, or new referral patterns can reduce relevance of older data"],
         ["Capacity assumptions", "120 beds is a documented mean operational planning value, not a guarantee that all 120 are staffed or usable every day"],
-        ["Synchronous reruns", "Model generation may be slow and should not be repeatedly triggered"],
+        ["Synchronous rolling reruns", "Daily-origin refitting is computationally intensive; model generation may take several minutes and should not be repeatedly triggered"],
     ], [3000, 6360], font_size=8.5)
 
     add_heading(doc, "12.1 Required disclaimer", 2)
     add_callout(doc, "For reports and demonstrations", "MEDCAST forecasts and recommendations are analytical decision-support outputs. They must be interpreted with current hospital information and approved through normal clinical and administrative governance. The system does not provide medical diagnosis or treatment advice.", "gold")
 
-    page_break(doc)
     add_heading(doc, "12.2 Statements to avoid", 2)
     add_table(doc, ["Avoid saying", "Prefer saying"], [
         ["“The model guarantees 40 admissions.”", "“The point forecast is 40, with an uncertainty range that should guide scenario planning.”"],
@@ -930,7 +934,9 @@ def build() -> Path:
 
     add_heading(doc, "13. Frequently Asked Questions", 1)
     faqs = [
-        ("Why was the split changed to 80% training and 20% testing?", "It is a standard, easy-to-explain evaluation structure and preserves a substantial recent holdout. MEDCAST applies it chronologically so future-like observations are not used for training."),
+        ("Why use 80% initial training and 20% rolling evaluation?", "It preserves a substantial recent evaluation period while keeping time order intact. Within the newest 20%, each origin only uses observations that would have been available at that point."),
+        ("What does rolling-origin mean?", "The forecast origin advances one day at a time. Newly observed actual data are added to an expanding training window, the models are refitted, and the requested lead-time forecast is scored against its future actual value."),
+        ("Why are there fewer 30-day than 1-day origins?", "A 30-day forecast can only be scored when 30 future actual observations remain. The current 156-day evaluation period therefore provides 156 one-day, 150 seven-day, and 127 thirty-day origins."),
         ("Why does the current best model differ from an earlier result?", "Changing the split or adding/correcting data changes the evidence available to each model. A new winner is a legitimate result when the same comparison rules are applied."),
         ("Why keep SARIMA if another model wins?", "SARIMA is central to the research comparison, provides interpretable seasonal structure, and supports the monthly outlook. Keeping it as a benchmark strengthens the evaluation."),
         ("What does an 80% prediction interval mean?", "Across repeated forecasts made under similar assumptions, the method aims for roughly 80% of actual outcomes to fall inside the interval. It does not mean one specific day has an absolute guarantee."),
@@ -957,17 +963,15 @@ def build() -> Path:
         r.font.color.rgb = RGBColor.from_string(DARK_BLUE)
         add_body(doc, answer)
 
-    page_break(doc)
-
     add_heading(doc, "14. Glossary", 1)
     glossary = [
         ["Actual", "Observed value recorded in the historical dataset"],
         ["AIC / BIC", "Information criteria used to compare SARIMA specifications while penalizing complexity"],
         ["Admissions", "New patient admissions during a day; a flow, not the same as occupied-bed census"],
-        ["Best model", "Candidate with the strongest holdout result under the app’s ranking rule for a horizon"],
+        ["Best model", "Candidate with the strongest aggregated rolling-origin result under the app’s ranking rule for a horizon"],
         ["Capacity scenario", "Assumed daily admission-handling threshold used for what-if analysis"],
         ["Forecast horizon", "How far ahead the forecast extends: 1, 7, or 30 days"],
-        ["Holdout/test set", "Newest 20% of observations not used to train the models"],
+        ["Evaluation period", "Newest 20% used as future targets; revealed observations join the expanding history only after their origin date"],
         ["High-demand day", "Actual or forecast admissions above the selected percentile threshold"],
         ["Mean operational capacity", "120-bed planning denominator that incorporates the regular 100-bed base and overflow use"],
         ["Occupied beds", "Number of beds currently occupied by patients"],
@@ -975,8 +979,9 @@ def build() -> Path:
         ["Point forecast", "Single estimated future value"],
         ["Prediction interval", "Range intended to communicate forecast uncertainty"],
         ["Primary model", "Operational model associated with the central 7-day planning comparison"],
-        ["Robustness", "Stability of error across rolling holdout windows"],
-        ["Training set", "Oldest 80% of observations used to fit models"],
+        ["Rolling origin", "Forecast cutoff date that advances through evaluation without using observations beyond that date"],
+        ["Robustness", "Stability of the ordered errors produced across rolling origins"],
+        ["Initial training set", "Oldest 80% of observations available before the first rolling evaluation origin"],
         ["Winsorization", "Capping extreme values at a percentile for sensitivity analysis"],
     ]
     add_table(doc, ["Term", "Definition"], glossary, [2600, 6760], font_size=8.8)
@@ -985,7 +990,7 @@ def build() -> Path:
     add_body(doc, "Before treating the application and guide as the accepted project baseline, confirm the following with the client:")
     add_bullets(doc, [
         "NDH is the intended hospital scope.",
-        "The chronological 80% training / 20% testing split is approved.",
+        "The chronological 80% initial training / 20% expanding-window rolling-origin evaluation is approved.",
         "The regular/base capacity is 100 beds and the mean operational occupancy denominator is 120 beds due to overflow arrangements.",
         "Capacity Risk controls are understood as daily admission-handling capacity, not bed inventory.",
         "The client accepts the Low/Moderate/High percentile definitions and the Capacity Risk score bands.",
@@ -1014,13 +1019,14 @@ def build() -> Path:
 
     add_heading(doc, "Appendix B. Current Evaluation Snapshot", 1)
     if snapshot:
-        add_body(doc, f"Dataset {snapshot.get('dataset_version', '—')} contains {snapshot.get('dataset_records', '—')} daily observations covering {snapshot.get('dataset_coverage_start', '—')} through {snapshot.get('dataset_coverage_end', '—')}. The active split is {snapshot.get('training_records', '—')} training records and {snapshot.get('testing_records', '—')} holdout/testing records.")
+        add_body(doc, f"Dataset {snapshot.get('dataset_version', '—')} contains {snapshot.get('dataset_records', '—')} daily observations covering {snapshot.get('dataset_coverage_start', '—')} through {snapshot.get('dataset_coverage_end', '—')}. The evaluation uses {snapshot.get('training_records', '—')} initial training records and {snapshot.get('testing_records', '—')} rolling evaluation days with a {snapshot.get('rolling_origin_step_days', '—')}-day origin step.")
         rows = []
         for item in snapshot.get("benchmarks", []):
             if item.get("is_best_for_horizon"):
                 rows.append([
                     str(item.get("horizon_days", "—")),
                     item.get("model_name", "—"),
+                    str(item.get("origin_count", "—")),
                     fmt(item.get("mae")),
                     fmt(item.get("rmse")),
                     fmt(item.get("mase"), 3),
@@ -1028,12 +1034,12 @@ def build() -> Path:
                     fmt(item.get("avg_width_80")),
                     fmt(item.get("robustness_score"), 1, "%"),
                 ])
-        add_table(doc, ["Days", "Model", "MAE", "RMSE", "MASE", "PI80 cov.", "PI80 width", "Robust."], rows, [760, 1560, 1050, 1050, 1050, 1300, 1380, 1210], font_size=7.9)
-        sarima = snapshot.get("sarima_selection", {})
-        selected = sarima.get("selected", {}) if isinstance(sarima, dict) else {}
-        add_body(doc, f"Selected SARIMA specification: {snapshot.get('selected_sarima_order', '—')}. AIC and BIC values are displayed in the web app’s model evaluation for reproducibility.", style="Small Note")
+        add_table(doc, ["Days", "Model", "Origins", "MAE", "RMSE", "MASE", "PI80 cov.", "PI80 width", "Robust."], rows, [650, 1350, 800, 950, 950, 900, 1100, 1300, 1360], font_size=7.7)
+        evaluation_sarima = snapshot.get("evaluation_sarima_order_selection", {})
+        evaluation_selected = evaluation_sarima.get("selected", {}) if isinstance(evaluation_sarima, dict) else {}
+        add_body(doc, f"Evaluation SARIMA specification selected from the initial 80%: {evaluation_selected.get('model_order', '—')}. Full-history SARIMA specification for the live forecast: {snapshot.get('selected_sarima_order', '—')}. The web app reports their AIC/BIC metadata separately.", style="Small Note")
     else:
-        add_body(doc, "Snapshot unavailable. Rerun the forecasting pipeline and regenerate this guide if a fixed evaluation appendix is required.")
+        add_body(doc, "Snapshot unavailable. Rerun the forecasting pipeline and regenerate this guide if a rolling-origin evaluation appendix is required.")
 
     add_callout(doc, "Final reminder", "The appendix records one local analytical state. The live application remains the authoritative source for the newest dataset version and forecast run.")
 

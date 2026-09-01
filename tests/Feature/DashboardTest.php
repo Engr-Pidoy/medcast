@@ -5,9 +5,11 @@ use App\Models\Hospital;
 use App\Models\ModelBenchmark;
 use App\Models\User;
 use App\Services\ForecastUpdater;
+use Database\Seeders\DatabaseSeeder;
 use Database\Seeders\MedcastSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Artisan;
 
 uses(RefreshDatabase::class);
 
@@ -42,7 +44,7 @@ test('medcast pages are reachable when authenticated', function (string $route) 
 
 test('staff can encode a daily admission record', function () {
     $forecastUpdater = Mockery::mock(ForecastUpdater::class);
-    $forecastUpdater->shouldReceive('run')->once()->andReturn(0);
+    $forecastUpdater->shouldReceive('run')->twice()->andReturn(0);
     $this->app->instance(ForecastUpdater::class, $forecastUpdater);
 
     $this->actingAs($this->user)
@@ -57,19 +59,32 @@ test('staff can encode a daily admission record', function () {
         ])
         ->assertRedirect(route('forecasting'));
 
+    $this->actingAs($this->user)
+        ->post(route('encode.store'), [
+            'admission_date' => '2024-08-19',
+            'regular_admissions' => 24,
+            'emergency_admissions' => 9,
+            'other_admissions' => 1,
+            'discharges' => 27,
+            'occupied_beds' => 94,
+            'notes' => 'Corrected manual entry',
+        ])
+        ->assertRedirect(route('forecasting'));
+
     $this->assertDatabaseHas('daily_admissions', [
-        'regular_admissions' => 20,
-        'emergency_admissions' => 8,
-        'total_admissions' => 28,
+        'regular_admissions' => 24,
+        'emergency_admissions' => 9,
+        'other_admissions' => 1,
+        'total_admissions' => 34,
     ]);
 
-    expect(DailyAdmission::query()->whereDate('admission_date', '2024-08-19')->exists())->toBeTrue();
+    expect(DailyAdmission::query()->whereDate('admission_date', '2024-08-19')->count())->toBe(1);
 
     $this->actingAs($this->user)
         ->get(route('historical'))
         ->assertOk()
         ->assertSee('Aug 19, 2024')
-        ->assertSee('28');
+        ->assertSee('34');
 });
 
 test('csv uploads merge by date and remain visible after refresh', function () {
@@ -85,6 +100,7 @@ test('csv uploads merge by date and remain visible after refresh', function () {
         'Date,Daily Admissions,Daily Discharges,Total Occupied Beds',
         '2024-08-18,99,20,95',
         '2024-08-19,31,22,92',
+        '2024-08-19,37,23,94',
     ]);
 
     $this->actingAs($this->user)
@@ -97,13 +113,54 @@ test('csv uploads merge by date and remain visible after refresh', function () {
     expect($hospital->dailyAdmissions()->whereDate('admission_date', $preservedDate)->exists())->toBeTrue();
 
     expect((int) $hospital->dailyAdmissions()->whereDate('admission_date', '2024-08-18')->value('total_admissions'))->toBe(99);
-    expect((int) $hospital->dailyAdmissions()->whereDate('admission_date', '2024-08-19')->value('total_admissions'))->toBe(31);
+    expect($hospital->dailyAdmissions()->whereDate('admission_date', '2024-08-19')->count())->toBe(1);
+    expect((int) $hospital->dailyAdmissions()->whereDate('admission_date', '2024-08-19')->value('total_admissions'))->toBe(37);
 
     $this->actingAs($this->user)
         ->get(route('historical'))
         ->assertOk()
         ->assertSee('Aug 19, 2024')
-        ->assertSee('31');
+        ->assertSee('37');
+});
+
+test('bootstrap seeding never replaces an existing admissions dataset', function () {
+    $hospital = Hospital::query()->where('code', 'NDH')->firstOrFail();
+    $record = $hospital->dailyAdmissions()->orderByDesc('admission_date')->firstOrFail();
+    $recordCount = $hospital->dailyAdmissions()->count();
+    $record->update([
+        'regular_admissions' => 123,
+        'emergency_admissions' => 0,
+        'other_admissions' => 0,
+        'notes' => 'Persistent operator value',
+    ]);
+
+    User::query()->delete();
+    $this->seed(DatabaseSeeder::class);
+
+    expect($hospital->dailyAdmissions()->count())->toBe($recordCount);
+    $this->assertDatabaseHas('daily_admissions', [
+        'id' => $record->id,
+        'regular_admissions' => 123,
+        'total_admissions' => 123,
+        'notes' => 'Persistent operator value',
+    ]);
+});
+
+test('an invalid fresh import cannot erase the existing admissions dataset', function () {
+    $recordCount = DailyAdmission::query()->count();
+    $invalidCsv = UploadedFile::fake()->createWithContent(
+        'invalid-admissions.csv',
+        "Wrong Header,Another Header\nvalue,value",
+    );
+
+    $exit = Artisan::call('medcast:import-admissions', [
+        '--path' => $invalidCsv->getRealPath(),
+        '--fresh' => true,
+        '--skip-forecast' => true,
+    ]);
+
+    expect($exit)->toBe(1);
+    expect(DailyAdmission::query()->count())->toBe($recordCount);
 });
 
 test('capacity risk scenarios support horizon capacity and penalty controls', function () {
@@ -137,7 +194,14 @@ test('performance page displays stronger evaluation and dataset transparency', f
             'testing_records' => 156,
             'training_percent' => 80,
             'testing_percent' => 20,
-            'split_method' => 'chronological_80_20',
+            'split_method' => 'chronological_80_20_expanding_window_rolling_origin',
+            'evaluation_method' => 'expanding_window_rolling_origin',
+            'rolling_origin_step_days' => 1,
+            'evaluation_origin_counts' => ['1' => 156, '7' => 150, '30' => 127],
+            'initial_train_end_date' => '2024-03-15',
+            'evaluation_sarima_order_selection' => [
+                'selected' => ['model_order' => '(1,1,0)(0,1,1)7'],
+            ],
         ]),
     ]);
 
@@ -166,6 +230,12 @@ test('performance page displays stronger evaluation and dataset transparency', f
             'rolling_mae_std' => 0.4,
             'robustness_score' => 87.1,
             'diagnostics' => [
+                'evaluation' => [
+                    'method' => 'expanding_window_rolling_origin',
+                    'origin_count' => 157 - $horizon,
+                    'origin_start_date' => '2024-03-15',
+                    'origin_end_date' => '2024-08-17',
+                ],
                 'sensitivity_analysis' => [
                     'capacity' => ['p50' => ['capacity' => 27, 'forecast_overload' => 2.1]],
                     'threshold' => ['p66' => ['threshold' => 31, 'f1_score' => 77.4]],
@@ -186,5 +256,8 @@ test('performance page displays stronger evaluation and dataset transparency', f
         ->assertSee('Sensitivity Analyses')
         ->assertSee('MEDCAST-test123')
         ->assertSee('80% training')
-        ->assertSee('20% testing');
+        ->assertSee('20% testing')
+        ->assertSee('Expanding-window rolling-origin')
+        ->assertSee('eligible rolling origins')
+        ->assertSee('initial 80% training set');
 });

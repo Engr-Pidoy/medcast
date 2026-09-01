@@ -21,10 +21,10 @@ class RunForecastCommand extends Command
 {
     protected $signature = 'medcast:run-forecast
                             {--hospital=NDH : Hospital code}
-                            {--holdout= : Optional holdout days; defaults to a 20% chronological test split}
+                            {--holdout= : Optional evaluation days; defaults to a 20% chronological rolling-origin period}
                             {--python=python : Python executable}';
 
-    protected $description = 'Run full MEDCAST benchmark (5 models, 1/7/30 horizons) and save forecasts';
+    protected $description = 'Run expanding-window MEDCAST benchmark (5 models, 1/7/30 horizons) and save forecasts';
 
     public function handle(): int
     {
@@ -51,7 +51,7 @@ class RunForecastCommand extends Command
         $this->info("Exporting {$count} days...");
         $this->exportAdmissionsCsv($hospital, $inputCsv);
 
-        $this->info('Running multi-model benchmark (Naive, SeasonalNaive, SARIMA, Prophet, HoltWinters)...');
+        $this->info('Running expanding-window rolling-origin benchmark (Naive, SeasonalNaive, SARIMA, Prophet, HoltWinters)...');
         $arguments = [
             $this->option('python'),
             $script,
@@ -193,6 +193,14 @@ class RunForecastCommand extends Command
                         'high_demand_threshold' => $row['high_demand_threshold'] ?? null,
                         'confusion_matrix' => $row['confusion_matrix'] ?? null,
                         'sensitivity_analysis' => $row['sensitivity_analysis'] ?? null,
+                        'evaluation' => [
+                            'method' => $row['evaluation_method'] ?? null,
+                            'origin_count' => $row['origin_count'] ?? null,
+                            'origin_start_date' => $row['origin_start_date'] ?? null,
+                            'origin_end_date' => $row['origin_end_date'] ?? null,
+                            'target_start_date' => $row['target_start_date'] ?? null,
+                            'target_end_date' => $row['target_end_date'] ?? null,
+                        ],
                     ],
                     'is_best_for_horizon' => (bool) ($row['is_best_for_horizon'] ?? false),
                     'evaluated_at' => now(),
@@ -202,6 +210,7 @@ class RunForecastCommand extends Command
             $primary = $payload['primary_model'] ?? 'SARIMA';
 
             $sarimaSelection = $payload['sarima_order_selection'] ?? null;
+            $evaluationSarimaSelection = $payload['evaluation_sarima_order_selection'] ?? null;
             $selectedSarimaOrder = $payload['selected_sarima_order'] ?? '(1,1,1)(1,1,1)7';
 
             foreach ($payload['forecasts'] ?? [] as $modelName => $points) {
@@ -223,9 +232,14 @@ class RunForecastCommand extends Command
                         'training_percent' => $payload['training_percent'] ?? null,
                         'testing_percent' => $payload['testing_percent'] ?? null,
                         'split_method' => $payload['split_method'] ?? null,
+                        'evaluation_method' => $payload['evaluation_method'] ?? null,
+                        'rolling_origin_step_days' => $payload['rolling_origin_step_days'] ?? null,
+                        'evaluation_origin_counts' => $payload['evaluation_origin_counts'] ?? null,
+                        'initial_train_end_date' => $payload['initial_train_end_date'] ?? null,
                         'prophet_backend' => $payload['prophet_backend'] ?? null,
                         'best_model_by_horizon' => $payload['best_model_by_horizon'] ?? null,
                         'sarima_order_selection' => $modelName === 'SARIMA' ? $sarimaSelection : null,
+                        'evaluation_sarima_order_selection' => $modelName === 'SARIMA' ? $evaluationSarimaSelection : null,
                         'monthly_outlook' => $modelName === 'SARIMA' ? ($payload['monthly_outlook'] ?? null) : null,
                     ],
                     'horizon_days' => 30,

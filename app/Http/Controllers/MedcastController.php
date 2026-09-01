@@ -584,18 +584,24 @@ class MedcastController extends Controller
             'notes' => $data['notes'] ?? 'Encoded via MEDCAST daily form',
         ];
 
-        $existing = $hospital->dailyAdmissions()
-            ->whereDate('admission_date', $data['admission_date'])
-            ->first();
-
-        if ($existing) {
-            $existing->update($values);
-        } else {
-            $hospital->dailyAdmissions()->create([
-                'admission_date' => $data['admission_date'],
+        DailyAdmission::query()->upsert(
+            [[
+                'hospital_id' => $hospital->id,
+                'admission_date' => Carbon::parse($data['admission_date'])->toDateString(),
                 ...$values,
-            ]);
-        }
+            ]],
+            ['hospital_id', 'admission_date'],
+            [
+                'regular_admissions',
+                'emergency_admissions',
+                'other_admissions',
+                'total_admissions',
+                'discharges',
+                'occupied_beds',
+                'occupancy_rate',
+                'notes',
+            ],
+        );
 
         $exit = $forecastUpdater->run();
         if ($exit !== 0) {
@@ -855,6 +861,12 @@ class MedcastController extends Controller
             : null;
         $sarimaSelected = is_array($sarimaSelection) ? ($sarimaSelection['selected'] ?? null) : null;
         $sarimaCandidates = is_array($sarimaSelection) ? ($sarimaSelection['candidates'] ?? []) : [];
+        $evaluationSarimaSelection = is_array($sarimaRun?->model_params)
+            ? ($sarimaRun->model_params['evaluation_sarima_order_selection'] ?? null)
+            : null;
+        $evaluationSarimaSelected = is_array($evaluationSarimaSelection)
+            ? ($evaluationSarimaSelection['selected'] ?? null)
+            : null;
 
         return view('medcast.performance', array_merge($this->hospitalContext($hospital), [
             'metrics' => [
@@ -878,6 +890,15 @@ class MedcastController extends Controller
                 'testing_records' => (int) ($params['testing_records'] ?? ($params['holdout_days'] ?? 30)),
                 'training_percent' => (float) ($params['training_percent'] ?? 80),
                 'testing_percent' => (float) ($params['testing_percent'] ?? 20),
+                'evaluation_method' => $params['evaluation_method'] ?? 'fixed_origin_holdout',
+                'evaluation_label' => ($params['evaluation_method'] ?? null) === 'expanding_window_rolling_origin'
+                    ? 'Expanding-window rolling-origin'
+                    : 'Fixed-origin holdout',
+                'rolling_origin_step_days' => (int) ($params['rolling_origin_step_days'] ?? 1),
+                'evaluation_origin_counts' => is_array($params['evaluation_origin_counts'] ?? null) ? $params['evaluation_origin_counts'] : [],
+                'initial_train_end_date' => isset($params['initial_train_end_date'])
+                    ? Carbon::parse($params['initial_train_end_date'])->format('M j, Y')
+                    : null,
                 'generated_at' => $primary?->run_at?->timezone($hospital->timezone)->format('M j, Y · g:i A') ?? '—',
                 'batch_id' => $primary ? $primary->batch_id : '—',
             ],
@@ -886,6 +907,7 @@ class MedcastController extends Controller
             'sensitivityAnalysis' => $bestByHorizon[7]['diagnostics']['sensitivity_analysis'] ?? [],
             'hasBenchmarks' => $benchmarks->isNotEmpty(),
             'sarimaSelected' => $sarimaSelected,
+            'evaluationSarimaSelected' => $evaluationSarimaSelected,
             'sarimaCandidates' => $sarimaCandidates,
             'sarimaCriterion' => is_array($sarimaSelection) ? ($sarimaSelection['selection_criterion'] ?? null) : null,
             'residualChart' => [

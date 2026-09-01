@@ -41,17 +41,6 @@ class ImportAdmissionsCommand extends Command
             ]
         );
 
-        if ($this->option('fresh')) {
-            $this->warn('Clearing existing MEDCAST data for NDH...');
-            DB::transaction(function () use ($hospital): void {
-                $runIds = ForecastRun::query()->where('hospital_id', $hospital->id)->pluck('id');
-                ForecastPoint::query()->whereIn('forecast_run_id', $runIds)->delete();
-                ModelEvaluation::query()->where('hospital_id', $hospital->id)->delete();
-                ForecastRun::query()->where('hospital_id', $hospital->id)->delete();
-                DailyAdmission::query()->where('hospital_id', $hospital->id)->delete();
-            });
-        }
-
         $handle = fopen($path, 'r');
         if ($handle === false) {
             $this->error('Unable to open CSV.');
@@ -75,82 +64,121 @@ class ImportAdmissionsCommand extends Command
             return self::FAILURE;
         }
 
-        $imported = 0;
+        /** @var array<string, array<string, mixed>> $recordsByDate */
+        $recordsByDate = [];
         $skipped = 0;
+        $duplicateRows = 0;
         $bar = $this->output->createProgressBar();
         $bar->start();
 
-        DB::transaction(function () use ($handle, $hospital, $columns, &$imported, &$skipped, $bar): void {
-            while (($row = fgetcsv($handle)) !== false) {
-                $dateRaw = $row[$columns['date']] ?? null;
-                $admissionsRaw = $row[$columns['admissions']] ?? null;
+        while (($row = fgetcsv($handle)) !== false) {
+            $dateRaw = $row[$columns['date']] ?? null;
+            $admissionsRaw = $row[$columns['admissions']] ?? null;
 
-                if (blank($dateRaw) || blank($admissionsRaw)) {
-                    $skipped++;
-
-                    continue;
-                }
-
-                try {
-                    $date = Carbon::parse($dateRaw)->toDateString();
-                } catch (\Throwable) {
-                    $skipped++;
-
-                    continue;
-                }
-
-                $admissions = (int) $admissionsRaw;
-                $discharges = (int) ($columns['discharges'] !== null ? ($row[$columns['discharges']] ?? 0) : 0);
-                $occupied = $columns['occupied'] !== null && ($row[$columns['occupied']] ?? '') !== ''
-                    ? (int) $row[$columns['occupied']]
-                    : null;
-                $operationalCapacity = max(1, (int) $hospital->total_beds);
-                $occupancy = $occupied !== null
-                    ? round(($occupied / $operationalCapacity) * 100, 2)
-                    : null;
-
-                $values = [
-                    'regular_admissions' => $admissions,
-                    'emergency_admissions' => 0,
-                    'other_admissions' => 0,
-                    'total_admissions' => $admissions,
-                    'discharges' => $discharges,
-                    'occupied_beds' => $occupied,
-                    'occupancy_rate' => $occupancy,
-                    'notes' => 'Imported from hospital CSV (total admissions; occupancy normalized to the 120-bed mean operational capacity)',
-                ];
-
-                $existing = DailyAdmission::query()
-                    ->where('hospital_id', $hospital->id)
-                    ->whereDate('admission_date', $date)
-                    ->first();
-
-                if ($existing) {
-                    $existing->update($values);
-                } else {
-                    DailyAdmission::query()->create([
-                        'hospital_id' => $hospital->id,
-                        'admission_date' => $date,
-                        ...$values,
-                    ]);
-                }
-
-                $imported++;
+            if (blank($dateRaw) || blank($admissionsRaw)) {
+                $skipped++;
                 $bar->advance();
+
+                continue;
             }
-        });
+
+            try {
+                $date = Carbon::parse($dateRaw)->toDateString();
+            } catch (\Throwable) {
+                $skipped++;
+                $bar->advance();
+
+                continue;
+            }
+
+            $admissions = (int) $admissionsRaw;
+            $discharges = (int) ($columns['discharges'] !== null ? ($row[$columns['discharges']] ?? 0) : 0);
+            $occupied = $columns['occupied'] !== null && ($row[$columns['occupied']] ?? '') !== ''
+                ? (int) $row[$columns['occupied']]
+                : null;
+            $operationalCapacity = max(1, (int) $hospital->total_beds);
+            $occupancy = $occupied !== null
+                ? round(($occupied / $operationalCapacity) * 100, 2)
+                : null;
+
+            if (isset($recordsByDate[$date])) {
+                $duplicateRows++;
+            }
+
+            // A later row for the same date intentionally replaces the earlier
+            // row from this file, so every hospital/date has one final value.
+            $recordsByDate[$date] = [
+                'hospital_id' => $hospital->id,
+                'admission_date' => $date,
+                'regular_admissions' => $admissions,
+                'emergency_admissions' => 0,
+                'other_admissions' => 0,
+                'total_admissions' => $admissions,
+                'discharges' => $discharges,
+                'occupied_beds' => $occupied,
+                'occupancy_rate' => $occupancy,
+                'notes' => 'Imported from hospital CSV (total admissions; occupancy normalized to the 120-bed mean operational capacity)',
+            ];
+
+            $bar->advance();
+        }
 
         fclose($handle);
         $bar->finish();
         $this->newLine(2);
 
-        $hospital->save();
+        if ($recordsByDate === []) {
+            $this->error('CSV contains no valid admission records. Existing data was not changed.');
+
+            return self::FAILURE;
+        }
+
+        $existingDates = DailyAdmission::query()
+            ->where('hospital_id', $hospital->id)
+            ->pluck('admission_date')
+            ->map(fn ($date): string => Carbon::parse((string) $date)->toDateString())
+            ->flip();
+        $updated = $this->option('fresh')
+            ? 0
+            : collect(array_keys($recordsByDate))->filter(fn (string $date): bool => $existingDates->has($date))->count();
+        $created = count($recordsByDate) - $updated;
+
+        DB::transaction(function () use ($hospital, $recordsByDate): void {
+            if ($this->option('fresh')) {
+                $this->warn('Clearing existing MEDCAST data for NDH...');
+                $runIds = ForecastRun::query()->where('hospital_id', $hospital->id)->pluck('id');
+                ForecastPoint::query()->whereIn('forecast_run_id', $runIds)->delete();
+                ModelEvaluation::query()->where('hospital_id', $hospital->id)->delete();
+                ForecastRun::query()->where('hospital_id', $hospital->id)->delete();
+                DailyAdmission::query()->where('hospital_id', $hospital->id)->delete();
+            }
+
+            foreach (array_chunk(array_values($recordsByDate), 500) as $records) {
+                DailyAdmission::query()->upsert(
+                    $records,
+                    ['hospital_id', 'admission_date'],
+                    [
+                        'regular_admissions',
+                        'emergency_admissions',
+                        'other_admissions',
+                        'total_admissions',
+                        'discharges',
+                        'occupied_beds',
+                        'occupancy_rate',
+                        'notes',
+                    ],
+                );
+            }
+        });
 
         if (! $this->option('skip-forecast')) {
             $this->seedDemoForecast($hospital);
         }
 
-        $this->info("Imported {$imported} daily records for {$hospital->name}.");
+        $this->info('Saved '.count($recordsByDate)." unique daily records for {$hospital->name}: {$created} added, {$updated} updated.");
+        if ($duplicateRows > 0) {
+            $this->warn("Collapsed {$duplicateRows} duplicate CSV rows by date; the last row for each date was retained.");
+        }
         if ($skipped > 0) {
             $this->warn("Skipped {$skipped} empty/invalid rows.");
         }
